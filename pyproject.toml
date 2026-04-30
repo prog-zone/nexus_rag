@@ -16,6 +16,10 @@ dependencies = [
     "slowapi",
     "structlog",
     "gunicorn",
+    "qdrant-client",
+    "fastembed",
+    "langchain",
+    "langchain-openai"
 ]
 
 [dependency-groups]
