@@ -1,0 +1,34 @@
+# --- Version Control ---
+.git/
+.gitignore
+
+# --- Docker ---
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# --- Environments & Secrets ---
+.env
+.env.*
+!.env.example
+.venv/
+env/
+venv/
+
+# --- Python Build & Cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# --- Database Data (Crucial) ---
+postgres_data/
+pgadmin_data/
+
+# --- Documentation (Optional to exclude) ---
+README.md
+LICENSE

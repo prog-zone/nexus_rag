@@ -1,0 +1,6 @@
+fastapi[standard]
+sqlalchemy
+asyncpg
+alembic
+pwdlib[argon2]
+pyjwt
