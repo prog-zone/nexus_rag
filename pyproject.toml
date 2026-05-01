@@ -1,5 +1,5 @@
 [project]
-name = "fastapi-setup"
+name = "nexus_rag"
 version = "0.1.0"
 description = "A starter template for FastAPI"
 readme = "README.md"
@@ -19,7 +19,8 @@ dependencies = [
     "qdrant-client",
     "fastembed",
     "langchain",
-    "langchain-openai"
+    "langchain-openai",
+    "unstructured-client",
 ]
 
 [dependency-groups]
