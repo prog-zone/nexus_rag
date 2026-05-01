@@ -1,6 +1,3 @@
-import asyncio
-from sqlalchemy import delete
-from datetime import datetime, timezone
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -8,43 +5,24 @@ from slowapi.errors import RateLimitExceeded
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
+from app.tkq import broker
 from app.core.logger import log
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import engine
 from app.core.limiter import limiter
-from app.models.user import UserRefreshToken
-from app.core.database import AsyncSessionLocal
-
-async def cleanup_expired_tokens():
-    """Background task to delete expired refresh tokens."""
-    while True:
-        try:
-            # Sleep for 24 hours (86400 seconds)
-            await asyncio.sleep(86400)
-            
-            async with AsyncSessionLocal() as session:
-                query = delete(UserRefreshToken).where(
-                    UserRefreshToken.expires_at < datetime.now(timezone.utc)
-                )
-                await session.execute(query)
-                await session.commit()
-            
-            log.info("expired_tokens_cleaned_successfully")
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            log.error("token_cleanup_failed", error=str(e))
 
 
 """Manages app startup and shutdown events, including background tasks."""
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("app_starting", project=settings.PROJECT_NAME)
-    cleanup_task = asyncio.create_task(cleanup_expired_tokens())
+    if not broker.is_worker_process:
+        await broker.startup()
     yield
-    cleanup_task.cancel()
     await engine.dispose()
+    if not broker.is_worker_process:
+        await broker.shutdown()
     log.info("app_shutting_down")
 
 app = FastAPI(
@@ -70,12 +48,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ARCHITECTURE NOTE: In a multi-worker setup (e.g., Gunicorn with 2+ workers), 
-# all workers will trigger this background task simultaneously. This is intentional.
-# PostgreSQL handles concurrent DELETE operations gracefully using row-level locks. 
-# One worker will delete the rows, and the others will safely execute a 0-row delete.
-# If scaling to massive traffic, consider migrating this to a dedicated cron job.
 
 """Formats rate limit errors into consistent JSON responses."""
 def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):

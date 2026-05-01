@@ -36,7 +36,19 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     EMBEDDING_MODEL: str = "text-embedding-3-small"
 
+    # Unstructured API Configuration
     UNSTRUCTURED_API_KEY: str = ""
+
+    # Redis Configuration
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    # S3 Configuration
+    S3_BUCKET: str = ""
+    S3_ACCESS_KEY: str = ""
+    S3_SECRET_KEY: str = ""
+    S3_ENDPOINT: str = ""
+    S3_REGION: str = ""
+    
 
     @property
     def database_url(self) -> str:

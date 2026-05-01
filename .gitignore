@@ -211,6 +211,7 @@ __marimo__/
 postgres_data/
 pgadmin_data/
 qdrant_data/
+minio_data/
 
 # Local project state file
 project_state.md

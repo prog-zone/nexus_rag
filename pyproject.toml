@@ -21,6 +21,11 @@ dependencies = [
     "langchain",
     "langchain-openai",
     "unstructured-client",
+    "redis",
+    "taskiq",
+    "taskiq-redis",
+    "taskiq-fastapi",
+    "boto3"
 ]
 
 [dependency-groups]

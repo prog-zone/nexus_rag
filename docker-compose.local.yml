@@ -24,6 +24,27 @@ services:
     volumes:
       - ./qdrant_data:/qdrant/storage
 
+  redis:
+    image: redis:7-alpine
+    container_name: ${PROJECT_NAME}_redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    container_name: ${PROJECT_NAME}_minio
+    restart: always
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./minio_data:/data
+
   pgadmin:
     image: dpage/pgadmin4
     container_name: ${PROJECT_NAME}_pgadmin
