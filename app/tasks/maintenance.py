@@ -14,7 +14,7 @@ async def cleanup_expired_tokens():
             )
             result = await session.execute(query)
             await session.commit()
-            log.info("expired_tokens_cleaned", deleted_count=result.rowcount)
+            log.info("expired_tokens_cleaned", deleted_count=result.rowcount)   # type: ignore
         except Exception as e:
             await session.rollback()
             log.error("token_cleanup_failed", error=str(e))

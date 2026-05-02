@@ -19,7 +19,8 @@ async def upload_document(
     db: Annotated[AsyncSession, Depends(get_db)]
 ):
     # 1. Generate unique S3 Key
-    file_ext = file.filename.split(".")[-1]
+    filename = file.filename or "unknown"
+    file_ext = filename.split(".")[-1]
     s3_key = f"uploads/{current_user.id}/{uuid.uuid4()}.{file_ext}"
     
     # 2. Upload to S3

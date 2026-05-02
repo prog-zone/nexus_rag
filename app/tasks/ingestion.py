@@ -26,7 +26,7 @@ async def process_document_pipeline(doc_id: str, s3_key: str):
         try:
             # 1. Extraction
             content = await s3_service.get_file_content(s3_key)
-            elements = await unstructured_service.partition_file_content(content, doc.filename)
+            elements = await unstructured_service.partition_file_content(content, doc.filename) or []
             
             texts = [el["text"] for el in elements if "text" in el]
             metadatas = [el.get("metadata", {}) for el in elements if "text" in el]
@@ -45,7 +45,7 @@ async def process_document_pipeline(doc_id: str, s3_key: str):
             for i, (text, dense, sparse) in enumerate(zip(texts, dense_vecs, sparse_vecs)):
                 points.append(PointStruct(
                     id=str(uuid.uuid4()),
-                    vector={
+                    vector={    # type: ignore
                         "dense": dense.tolist(),
                         "sparse": sparse.as_object()
                     },

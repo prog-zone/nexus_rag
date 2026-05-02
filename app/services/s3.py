@@ -1,4 +1,3 @@
-# type: ignore
 import aioboto3
 from botocore.client import Config
 from app.core.config import settings
@@ -19,7 +18,7 @@ class S3Service:
 
     async def upload_file(self, file_content: bytes, object_name: str) -> str:
         try:
-            async with self.session.client(**self.client_kwargs) as s3:
+            async with self.session.client(**self.client_kwargs) as s3: # type: ignore
                 await s3.put_object(
                     Bucket=settings.S3_BUCKET,
                     Key=object_name,
@@ -37,7 +36,7 @@ class S3Service:
         Note: generate_presigned_url is an async method in aioboto3.
         """
         try:
-            async with self.session.client(**self.client_kwargs) as s3:
+            async with self.session.client(**self.client_kwargs) as s3: # type: ignore
                 return await s3.generate_presigned_url(
                     'get_object',
                     Params={'Bucket': settings.S3_BUCKET, 'Key': object_name},
@@ -50,9 +49,8 @@ class S3Service:
     async def get_file_content(self, object_name: str) -> bytes:
         """Fetch raw bytes of the file from S3 asynchronously."""
         try:
-            async with self.session.client(**self.client_kwargs) as s3:
+            async with self.session.client(**self.client_kwargs) as s3: # type: ignore
                 response = await s3.get_object(Bucket=settings.S3_BUCKET, Key=object_name)
-                # The 'Body' in aioboto3 is an async stream reader
                 return await response['Body'].read()
         except Exception as e:
             log.error("s3_download_failed", key=object_name, error=str(e))
