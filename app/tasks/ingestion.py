@@ -2,7 +2,7 @@ import uuid
 from app.tkq import broker
 from qdrant_client.models import PointStruct
 from app.core.database import AsyncSessionLocal
-from app.models.document import Document, DocumentStatus
+from app.models.rag import Document, DocumentStatus
 from app.services.s3 import s3_service
 from app.services.unstructured import unstructured_service
 from app.services.embeddings import embedding_service

@@ -1,6 +1,10 @@
 from app.core.database import Base
 from app.models.user import User, Profile, UserRefreshToken
-from app.models.document import Document, DocumentStatus
+from app.models.rag import Case, Document, DocumentStatus, DocumentSource, Chat, ChatMessage, MessageRole, CaseStatus
 
-# This makes importing 'Base' in env.py pick up all attached models
-__all__ = ["Base", "User", "Profile", "UserRefreshToken", "Document", "DocumentStatus"]
+__all__ = [
+    "Base",
+    "User", "Profile", "UserRefreshToken",
+    "Case", "Chat", "ChatMessage", "MessageRole", "CaseStatus",
+    "Document", "DocumentStatus", "DocumentSource",
+]

@@ -25,6 +25,7 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 LoginFormData = Annotated[OAuth2PasswordRequestForm, Depends()]
 DB_ERROR_MSG = "Database error occurred"
 
+
 @router.post("/register", response_model=UserSchema)
 async def register(user_in: UserCreateSchema, background_tasks: BackgroundTasks, db: AsyncDbSession):
     # Check if user exists
