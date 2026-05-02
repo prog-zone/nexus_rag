@@ -1,14 +1,9 @@
-# app/schemas/rag.py
 import uuid
 from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 from app.models.rag import CaseStatus, DocumentStatus, DocumentSource, MessageRole
 
-
-# ──────────────────────────────────────────────
-# Case Schemas
-# ──────────────────────────────────────────────
 
 class CreateCaseSchema(BaseModel):
     title: str = Field(..., min_length=2, max_length=200)
@@ -29,10 +24,6 @@ class CaseSchema(BaseModel):
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
-
-# ──────────────────────────────────────────────
-# Document Schemas
-# ──────────────────────────────────────────────
 
 class DocumentSchema(BaseModel):
     id: uuid.UUID
@@ -57,10 +48,6 @@ class DocumentStatusSchema(BaseModel):
         return cls(document_id=doc.id, status=doc.status)
 
 
-# ──────────────────────────────────────────────
-# Chat Schemas
-# ──────────────────────────────────────────────
-
 class CreateChatSchema(BaseModel):
     title: str = Field(default="New Chat", min_length=1, max_length=200)
 
@@ -78,12 +65,8 @@ class ChatSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# ──────────────────────────────────────────────
-# Chat Message Schemas
-# ──────────────────────────────────────────────
-
 class SendMessageSchema(BaseModel):
-    content: str = Field(..., min_length=1, max_length=50000)  # 50k chars covers long legal pastes
+    content: str = Field(..., min_length=1, max_length=50000)
 
 class ChatMessageSchema(BaseModel):
     id: uuid.UUID

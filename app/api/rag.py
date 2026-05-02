@@ -27,10 +27,6 @@ AsyncDbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-# ──────────────────────────────────────────────
-# Cases
-# ──────────────────────────────────────────────
-
 @router.post("/cases", response_model=CaseSchema, status_code=status.HTTP_201_CREATED)
 async def create_case(body: CreateCaseSchema, current_user: CurrentUser, db: AsyncDbSession):
     new_case = Case(
@@ -106,10 +102,6 @@ async def delete_case(case_id: uuid.UUID, current_user: CurrentUser, db: AsyncDb
     await db.commit()
     log.info("case_deleted", case_id=str(case_id), user_id=str(current_user.id))
 
-
-# ──────────────────────────────────────────────
-# Documents
-# ──────────────────────────────────────────────
 
 @router.post("/cases/{case_id}/documents", response_model=DocumentStatusSchema, status_code=status.HTTP_201_CREATED)
 async def upload_document(
@@ -207,10 +199,6 @@ async def delete_document(
     await db.commit()
     log.info("document_deleted", doc_id=str(doc_id), case_id=str(case_id))
 
-
-# ──────────────────────────────────────────────
-# Chats
-# ──────────────────────────────────────────────
 
 @router.post("/cases/{case_id}/chats", response_model=ChatSchema, status_code=status.HTTP_201_CREATED)
 async def create_chat(
@@ -322,10 +310,6 @@ async def delete_chat(
     log.info("chat_deleted", chat_id=str(chat_id), case_id=str(case_id))
 
 
-# ──────────────────────────────────────────────
-# Chat Messages
-# ──────────────────────────────────────────────
-
 @router.get("/cases/{case_id}/chats/{chat_id}/messages", response_model=ChatHistorySchema)
 async def get_chat_messages(
     case_id: uuid.UUID,
@@ -353,10 +337,6 @@ async def get_chat_messages(
     return {"chat": chat, "messages": messages}
 
 
-# ──────────────────────────────────────────────
-# Send Message (RAG Pipeline)
-# ──────────────────────────────────────────────
-
 INLINE_PASTE_THRESHOLD = 500
 
 @router.post("/cases/{case_id}/chats/{chat_id}/message")
@@ -367,7 +347,6 @@ async def send_message(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    # Verify chat
     result = await db.execute(
         select(Chat).where(
             Chat.id == chat_id,
@@ -379,7 +358,6 @@ async def send_message(
     if not chat:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
 
-    # Save user message
     user_message = ChatMessage(
         chat_id=chat_id,
         role=MessageRole.USER,
@@ -392,7 +370,6 @@ async def send_message(
     await db.commit()
     await db.refresh(user_message)
 
-    # Detect inline paste
     if len(body.content) > INLINE_PASTE_THRESHOLD:
         paste_doc = Document(
             user_id=current_user.id,
@@ -416,7 +393,6 @@ async def send_message(
             text_content=body.content
         )
 
-    # Fetch last 10 messages
     result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.chat_id == chat_id)
@@ -425,12 +401,15 @@ async def send_message(
     )
     recent_messages = list(reversed(result.scalars().all()))
 
-    # Retrieval pipeline
     retrieval_result = await retrieval_service.retrieve(
         query=body.content,
         case_id=str(case_id),
         chat_id=str(chat_id),
-        user_id=str(current_user.id)
+        user_id=str(current_user.id),
+        recent_messages=[
+            {"role": m.role.value, "content": m.content}
+            for m in recent_messages
+        ]
     )
     context_prompt = retrieval_service.build_context_prompt(retrieval_result)
 
@@ -440,7 +419,6 @@ async def send_message(
         has_context=retrieval_result["has_relevant_context"]
     )
 
-    # Stream SSE response
     return StreamingResponse(
         llm_service.stream_response(
             query=body.content,

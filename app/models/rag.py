@@ -9,10 +9,6 @@ from sqlalchemy.sql import func
 from app.core.database import Base
 
 
-# ──────────────────────────────────────────────
-# Enums
-# ──────────────────────────────────────────────
-
 class CaseStatus(str, enum.Enum):
     ACTIVE = "active"
     ARCHIVED = "archived"
@@ -37,10 +33,6 @@ class MessageRole(str, enum.Enum):
     SYSTEM = "system"
 
 
-# ──────────────────────────────────────────────
-# Case
-# ──────────────────────────────────────────────
-
 class Case(Base):
     __tablename__ = "cases"
 
@@ -55,10 +47,6 @@ class Case(Base):
     documents: Mapped[list["Document"]] = relationship("Document", back_populates="case", cascade="all, delete-orphan")
     chats: Mapped[list["Chat"]] = relationship("Chat", back_populates="case", cascade="all, delete-orphan")
 
-
-# ──────────────────────────────────────────────
-# Document
-# ──────────────────────────────────────────────
 
 class Document(Base):
     __tablename__ = "documents"
@@ -79,10 +67,6 @@ class Document(Base):
     case: Mapped["Case"] = relationship("Case", back_populates="documents")
 
 
-# ──────────────────────────────────────────────
-# Chat
-# ──────────────────────────────────────────────
-
 class Chat(Base):
     __tablename__ = "chats"
 
@@ -97,10 +81,6 @@ class Chat(Base):
     case: Mapped["Case"] = relationship("Case", back_populates="chats")
     messages: Mapped[list["ChatMessage"]] = relationship("ChatMessage", back_populates="chat", cascade="all, delete-orphan", order_by="ChatMessage.created_at")
 
-
-# ──────────────────────────────────────────────
-# ChatMessage
-# ──────────────────────────────────────────────
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"

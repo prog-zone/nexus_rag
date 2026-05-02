@@ -12,11 +12,6 @@ from app.core.logger import log
 
 
 def _build_bm25_sparse_vector(text: str) -> SparseVector:
-    """
-    Build a sparse vector for Qdrant BM25.
-    Qdrant handles BM25 scoring internally via IDF modifier.
-    We provide term indices and raw term frequencies.
-    """
     terms = text.lower().split()
     term_freq: dict[int, float] = {}
     for term in terms:
@@ -34,7 +29,6 @@ def _build_points(
     dense_vecs: list[list[float]],
     payload_base: dict
 ) -> list[PointStruct]:
-    """Shared point builder for both document and chat memory ingestion."""
     points = []
     for text, dense in zip(texts, dense_vecs):
         sparse = _build_bm25_sparse_vector(text)
@@ -63,7 +57,6 @@ async def process_document_pipeline(doc_id: str, s3_key: str):
         await db.commit()
 
         try:
-            # 1. Extract and chunk via Unstructured
             content = await s3_service.get_file_content(s3_key)
             elements = await unstructured_service.partition_file_content(content, doc.filename) or []
 
@@ -74,10 +67,8 @@ async def process_document_pipeline(doc_id: str, s3_key: str):
                 doc.status = DocumentStatus.FAILED
                 return
 
-            # 2. Generate dense embeddings via Voyage
             dense_vecs = embedding_service.generate_embeddings(texts)
 
-            # 3. Build points with BM25 sparse vectors
             qdrant_service.ensure_collections()
             points = _build_points(
                 texts, dense_vecs,
@@ -90,7 +81,6 @@ async def process_document_pipeline(doc_id: str, s3_key: str):
                 }
             )
 
-            # 4. Upsert to nexus_documents
             qdrant_service.upsert_documents(points)
             doc.status = DocumentStatus.COMPLETED
             log.info("ingestion_task_success", doc_id=doc_id, chunks=len(points))
@@ -116,7 +106,6 @@ async def process_inline_paste_pipeline(doc_id: str, text_content: str):
         await db.commit()
 
         try:
-            # 1. Chunk via Unstructured
             elements = await unstructured_service.partition_file_content(
                 text_content.encode("utf-8"), doc.filename
             ) or []
@@ -128,10 +117,8 @@ async def process_inline_paste_pipeline(doc_id: str, text_content: str):
                 doc.status = DocumentStatus.FAILED
                 return
 
-            # 2. Generate dense embeddings
             dense_vecs = embedding_service.generate_embeddings(texts)
 
-            # 3. Build points scoped to chat_id
             qdrant_service.ensure_collections()
             points = _build_points(
                 texts, dense_vecs,
@@ -145,7 +132,6 @@ async def process_inline_paste_pipeline(doc_id: str, text_content: str):
                 }
             )
 
-            # 4. Upsert to nexus_chat_memory
             qdrant_service.upsert_chat_memory(points)
             doc.status = DocumentStatus.COMPLETED
             log.info("inline_paste_ingestion_success", doc_id=doc_id, chunks=len(points))

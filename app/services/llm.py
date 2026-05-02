@@ -12,14 +12,13 @@ from app.tasks.ingestion import push_chat_history_to_qdrant
 
 
 SYSTEM_PROMPT = """You are Nexus, a precise legal AI assistant. You help lawyers and legal teams analyze case documents with maximum accuracy.
-
-STRICT RULES:
-1. Only answer from the provided [Retrieved Context]. Never use outside knowledge for legal facts.
-2. Every claim MUST cite its source: [Source: document_name]
-3. If the answer is not in the context, say exactly: "I could not find this information in the case documents. Please verify the source document directly."
-4. If the query is ambiguous, ask the user to clarify which document or clause they mean.
-5. Never guess, infer, or hallucinate legal information.
-6. Be precise and concise. Legal accuracy is more important than length."""
+        STRICT RULES:
+        1. Only answer from the provided [Retrieved Context]. Never use outside knowledge for legal facts.
+        2. Every claim MUST cite its source: [Source: document_name]
+        3. If the answer is not in the context, say exactly: "I could not find this information in the case documents. Please verify the source document directly."
+        4. If the query is ambiguous, ask the user to clarify which document or clause they mean.
+        5. Never guess, infer, or hallucinate legal information.
+        6. Be precise and concise. Legal accuracy is more important than length."""
 
 
 class LLMService:
@@ -33,7 +32,7 @@ class LLMService:
         recent_messages: list[ChatMessage],
         user_query: str
     ) -> list[dict]:
-        """Assembles the full message list for the LLM."""
+
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
         if context_prompt:
@@ -63,12 +62,7 @@ class LLMService:
         user_message: ChatMessage,
         db: AsyncSession
     ) -> AsyncGenerator[str, None]:
-        """
-        Core SSE generator.
-        Streams LLM response token by token and saves to DB when complete.
-        """
 
-        # ── No context found — fail loudly, never hallucinate ────
         if not has_relevant_context:
             failure_msg = (
                 "I could not find relevant information in the case documents "
@@ -86,7 +80,6 @@ class LLMService:
             )
             return
 
-        # ── Stream LLM response ───────────────────────────────────
         full_response = ""
         try:
             messages = self._build_messages(
@@ -106,7 +99,7 @@ class LLMService:
                 model=self.model,
                 messages=messages,
                 stream=True,
-                temperature=0.1,  # low temp for legal precision
+                temperature=0.1,
                 max_tokens=2048
             )
 
@@ -125,7 +118,6 @@ class LLMService:
             yield f"data: {json.dumps({'type': 'error', 'text': 'An error occurred generating the response.'})}\n\n"
 
         finally:
-            # ── Always save response to DB, even on partial failure ──
             if full_response:
                 await self._save_assistant_message(
                     content=full_response,
@@ -141,7 +133,7 @@ class LLMService:
         user_message: ChatMessage,
         db: AsyncSession
     ):
-        """Saves assistant response to DB and triggers chat history push if needed."""
+
         try:
             assistant_msg = ChatMessage(
                 chat_id=chat.id,
@@ -155,7 +147,6 @@ class LLMService:
             chat.message_count += 2
             await db.commit()
 
-            # Trigger background push to Qdrant if chat history is long enough
             if chat.message_count > 10:
                 await push_chat_history_to_qdrant.kiq(chat_id=str(chat.id))
 

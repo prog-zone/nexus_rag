@@ -9,8 +9,6 @@ class QdrantService:
         self.client = QdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
         self.documents_collection = "nexus_documents"
         self.chat_memory_collection = "nexus_chat_memory"
-
-        # voyage-law-2 embedding dimension
         self.dense_dim = 1024
 
     def _vector_config(self):
@@ -22,10 +20,9 @@ class QdrantService:
         }
 
     def _sparse_config(self):
-        # Qdrant native BM25 — no token limit, pure statistical term matching
         return {
             "sparse": models.SparseVectorParams(
-                modifier=models.Modifier.IDF  # enables BM25 scoring
+                modifier=models.Modifier.IDF
             )
         }
 
@@ -66,7 +63,6 @@ class QdrantService:
         user_id: str,
         top_k: int = 5
     ) -> list[models.ScoredPoint]:
-        """Hybrid search on nexus_documents filtered by case."""
         return self.client.query_points(
             collection_name=self.documents_collection,
             prefetch=[
@@ -105,7 +101,6 @@ class QdrantService:
         source: str,
         top_k: int = 3
     ) -> list[models.ScoredPoint]:
-        """Search nexus_chat_memory filtered by chat and source type."""
         return self.client.query_points(
             collection_name=self.chat_memory_collection,
             prefetch=[

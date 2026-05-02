@@ -12,7 +12,6 @@ class UnstructuredService:
         )
 
     async def partition_file_content(self, content: bytes, filename: str):
-        """Processes raw file bytes through Unstructured with HI_RES strategy."""
         files = shared.Files(
             content=content,
             file_name=filename,

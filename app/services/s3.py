@@ -31,10 +31,6 @@ class S3Service:
             raise
 
     async def get_presigned_url(self, object_name: str, expiration=3600) -> str:
-        """
-        Generate a temporary URL. 
-        Note: generate_presigned_url is an async method in aioboto3.
-        """
         try:
             async with self.session.client(**self.client_kwargs) as s3: # type: ignore
                 return await s3.generate_presigned_url(
@@ -47,7 +43,6 @@ class S3Service:
             raise
     
     async def get_file_content(self, object_name: str) -> bytes:
-        """Fetch raw bytes of the file from S3 asynchronously."""
         try:
             async with self.session.client(**self.client_kwargs) as s3: # type: ignore
                 response = await s3.get_object(Bucket=settings.S3_BUCKET, Key=object_name)

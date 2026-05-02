@@ -18,14 +18,10 @@ class RerankerService:
         documents: list[str],
         top_k: int = 3
     ) -> list[dict]:
-        """
-        Rerank documents using Voyage rerank-2.5.
-        Returns list of {index, text, score} sorted by relevance.
-        """
+        
         if not documents:
             return []
 
-        # Prepend legal instruction to query for instruction-following
         instructed_query = f"{self.instruction}\n\nQuery: {query}"
 
         result = self.client.rerank(
