@@ -32,9 +32,14 @@ class Settings(BaseSettings):
     QDRANT_PORT: int = 6333
     QDRANT_GRPC_PORT: int = 6334
 
+    # Voyage AI Configuration
+    VOYAGE_API_KEY: str = ""
+    VOYAGE_EMBEDDING_MODEL: str = "voyage-law-2"
+    VOYAGE_RERANKER_MODEL: str = "rerank-2.5"
+
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    OPENAI_CHAT_MODEL: str = "gpt-4o"
 
     # Unstructured API Configuration
     UNSTRUCTURED_API_KEY: str = ""
@@ -48,7 +53,6 @@ class Settings(BaseSettings):
     S3_SECRET_KEY: str = ""
     S3_ENDPOINT: str = ""
     S3_REGION: str = ""
-    
 
     @property
     def database_url(self) -> str:

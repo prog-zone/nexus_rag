@@ -1,5 +1,6 @@
 import uuid
 from typing import Annotated
+from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, UploadFile, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -8,16 +9,17 @@ from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.logger import log
 from app.services.s3 import s3_service
+from app.services.llm import llm_service
+from app.services.retrieval import retrieval_service
 from app.models.user import User
-from app.models.rag import Case, Chat, ChatMessage, Document, DocumentStatus, DocumentSource, CaseStatus
+from app.models.rag import Case, Chat, ChatMessage, Document, DocumentStatus, DocumentSource, CaseStatus, MessageRole
 from app.schemas.rag import (
     CreateCaseSchema, UpdateCaseSchema, CaseSchema,
     DocumentSchema, DocumentStatusSchema,
     CreateChatSchema, UpdateChatSchema, ChatSchema,
     SendMessageSchema, ChatMessageSchema, ChatHistorySchema
 )
-from app.tasks.ingestion import process_document_pipeline
-
+from app.tasks.ingestion import process_document_pipeline, process_inline_paste_pipeline
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -144,7 +146,7 @@ async def upload_document(
 
     await process_document_pipeline.kiq(doc_id=str(new_doc.id), s3_key=s3_key)
     log.info("document_uploaded", doc_id=str(new_doc.id), case_id=str(case_id))
-    return new_doc
+    return DocumentStatusSchema.from_document(new_doc)
 
 
 @router.get("/cases/{case_id}/documents", response_model=list[DocumentSchema])
@@ -352,8 +354,10 @@ async def get_chat_messages(
 
 
 # ──────────────────────────────────────────────
-# Send Message (RAG Pipeline - placeholder)
+# Send Message (RAG Pipeline)
 # ──────────────────────────────────────────────
+
+INLINE_PASTE_THRESHOLD = 500
 
 @router.post("/cases/{case_id}/chats/{chat_id}/message")
 async def send_message(
@@ -363,8 +367,94 @@ async def send_message(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    # Full RAG pipeline goes here — coming next
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="RAG pipeline not yet implemented"
+    # Verify chat
+    result = await db.execute(
+        select(Chat).where(
+            Chat.id == chat_id,
+            Chat.case_id == case_id,
+            Chat.user_id == current_user.id
+        )
+    )
+    chat = result.scalar_one_or_none()
+    if not chat:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+
+    # Save user message
+    user_message = ChatMessage(
+        chat_id=chat_id,
+        role=MessageRole.USER,
+        content=body.content,
+        sequence_index=chat.message_count,
+        is_in_qdrant=False,
+        has_attachment=False
+    )
+    db.add(user_message)
+    await db.commit()
+    await db.refresh(user_message)
+
+    # Detect inline paste
+    if len(body.content) > INLINE_PASTE_THRESHOLD:
+        paste_doc = Document(
+            user_id=current_user.id,
+            case_id=case_id,
+            chat_id=chat_id,
+            filename=f"pasted_text_{user_message.id}",
+            s3_key="",
+            source=DocumentSource.INLINE_PASTE,
+            status=DocumentStatus.PENDING
+        )
+        db.add(paste_doc)
+        await db.commit()
+        await db.refresh(paste_doc)
+
+        user_message.has_attachment = True
+        user_message.attachment_doc_id = paste_doc.id
+        await db.commit()
+
+        await process_inline_paste_pipeline.kiq(
+            doc_id=str(paste_doc.id),
+            text_content=body.content
+        )
+
+    # Fetch last 10 messages
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.chat_id == chat_id)
+        .order_by(ChatMessage.sequence_index.desc())
+        .limit(10)
+    )
+    recent_messages = list(reversed(result.scalars().all()))
+
+    # Retrieval pipeline
+    retrieval_result = await retrieval_service.retrieve(
+        query=body.content,
+        case_id=str(case_id),
+        chat_id=str(chat_id),
+        user_id=str(current_user.id)
+    )
+    context_prompt = retrieval_service.build_context_prompt(retrieval_result)
+
+    log.info(
+        "message_pipeline_complete",
+        chat_id=str(chat_id),
+        has_context=retrieval_result["has_relevant_context"]
+    )
+
+    # Stream SSE response
+    return StreamingResponse(
+        llm_service.stream_response(
+            query=body.content,
+            context_prompt=context_prompt,
+            recent_messages=recent_messages,
+            has_relevant_context=retrieval_result["has_relevant_context"],
+            chat=chat,
+            user_message=user_message,
+            db=db
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
     )

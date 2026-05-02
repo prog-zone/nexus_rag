@@ -17,7 +17,6 @@ dependencies = [
     "structlog",
     "gunicorn",
     "qdrant-client",
-    "fastembed",
     "langchain",
     "langchain-openai",
     "unstructured-client",
@@ -26,7 +25,7 @@ dependencies = [
     "taskiq-redis",
     "taskiq-fastapi",
     "aioboto3",
-    "aiohttp>=3.13.5",
+    "voyageai",
 ]
 
 [dependency-groups]

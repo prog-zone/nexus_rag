@@ -11,6 +11,7 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import engine
 from app.core.limiter import limiter
+from app.services.qdrant import qdrant_service
 
 
 """Manages app startup and shutdown events, including background tasks."""
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
     log.info("app_starting", project=settings.PROJECT_NAME)
     if not broker.is_worker_process:
         await broker.startup()
+    qdrant_service.ensure_collections() 
     yield
     await engine.dispose()
     if not broker.is_worker_process:

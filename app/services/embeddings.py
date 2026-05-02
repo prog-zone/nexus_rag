@@ -1,26 +1,31 @@
-from fastembed import TextEmbedding, SparseTextEmbedding
-from typing import List
+import voyageai
+from app.core.config import settings
+from app.core.logger import log
+
 
 class EmbeddingService:
     def __init__(self):
-        self._dense_model: TextEmbedding | None = None
-        self._sparse_model: SparseTextEmbedding | None = None
+        self.client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)
+        self.model = settings.VOYAGE_EMBEDDING_MODEL
 
-    @property
-    def dense_model(self) -> TextEmbedding:
-        if self._dense_model is None:
-            self._dense_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-        return self._dense_model
+    def generate_embeddings(self, texts: list[str]) -> list[list[float]]:
+        """Generate dense embeddings via Voyage AI voyage-law-2."""
+        response = self.client.embed(
+            texts=texts,
+            model=self.model,
+            input_type="document"
+        )
+        log.info("embeddings_generated", count=len(texts), model=self.model)
+        return response.embeddings
 
-    @property
-    def sparse_model(self) -> SparseTextEmbedding:
-        if self._sparse_model is None:
-            self._sparse_model = SparseTextEmbedding(model_name="prithivida/Splade_PP_en_v1")
-        return self._sparse_model
+    def generate_query_embedding(self, query: str) -> list[float]:
+        """Generate embedding for a query (different input_type for better retrieval)."""
+        response = self.client.embed(
+            texts=[query],
+            model=self.model,
+            input_type="query"
+        )
+        return response.embeddings[0]
 
-    def generate_hybrid_embeddings(self, texts: List[str]):
-        dense_embeddings = list(self.dense_model.embed(texts))
-        sparse_embeddings = list(self.sparse_model.embed(texts))
-        return dense_embeddings, sparse_embeddings
 
 embedding_service = EmbeddingService()

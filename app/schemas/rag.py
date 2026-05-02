@@ -52,6 +52,10 @@ class DocumentStatusSchema(BaseModel):
     status: DocumentStatus
     model_config = ConfigDict(from_attributes=True)
 
+    @classmethod
+    def from_document(cls, doc) -> "DocumentStatusSchema":
+        return cls(document_id=doc.id, status=doc.status)
+
 
 # ──────────────────────────────────────────────
 # Chat Schemas
