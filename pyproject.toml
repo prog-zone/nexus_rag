@@ -25,7 +25,8 @@ dependencies = [
     "taskiq",
     "taskiq-redis",
     "taskiq-fastapi",
-    "boto3"
+    "aioboto3",
+    "aiohttp>=3.13.5",
 ]
 
 [dependency-groups]

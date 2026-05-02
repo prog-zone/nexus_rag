@@ -13,7 +13,6 @@ class UnstructuredService:
     async def partition_file_content(self, content: bytes, filename: str):
         """Processes raw file bytes through Unstructured."""
         
-        # This Files object is what the SDK was complaining about
         files = shared.Files(
             content=content,
             file_name=filename,
@@ -22,7 +21,7 @@ class UnstructuredService:
         req = operations.PartitionRequest(
             partition_parameters=shared.PartitionParameters(
                 files=files,
-                strategy="hi_res",
+                strategy=shared.Strategy.AUTO,
                 chunking_strategy="by_title",
                 max_characters=1500,
                 combine_under_n_chars=500,
@@ -31,7 +30,7 @@ class UnstructuredService:
 
         try:
             res = await self.client.general.partition_async(request=req)
-            log.info("unstructured_extraction_success", count=len(res.elements))
+            log.info("unstructured_extraction_success", count=len(res.elements or []))
             return res.elements
         except Exception as e:
             log.error("unstructured_extraction_failed", error=str(e))
