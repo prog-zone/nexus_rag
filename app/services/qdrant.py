@@ -25,7 +25,7 @@ class QdrantService:
             )
             log.info("qdrant_collection_initialized", name=self.collection_name)
 
-    async def upsert_points(self, points: List[models.PointStruct]):
+    def upsert_points(self, points: List[models.PointStruct]):
         return self.client.upsert(
             collection_name=self.collection_name,
             points=points

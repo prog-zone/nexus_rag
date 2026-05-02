@@ -56,8 +56,8 @@ async def process_document_pipeline(doc_id: str, s3_key: str):
                     }
                 ))
 
-            # 4. Final Upsert[cite: 1]
-            await qdrant_service.upsert_points(points)
+            # 4. Final Upsert
+            qdrant_service.upsert_points(points)
             doc.status = DocumentStatus.COMPLETED
             log.info("ingestion_task_success", doc_id=doc_id, chunks=len(points))
 
