@@ -22,12 +22,12 @@ def _estimate_tokens(text: str) -> float:
     return len(text) / CHARS_PER_TOKEN
 
 
-def _build_points(
+async def _build_points(
     texts: list[str],
     dense_vecs: list[list[float]],
     payload_base: dict
 ) -> list[PointStruct]:
-    sparse_vecs = sparse_embedder.embed_documents(texts)
+    sparse_vecs = await sparse_embedder.embed_documents(texts)
     points = []
     for text, dense, sparse in zip(texts, dense_vecs, sparse_vecs):
         points.append(PointStruct(
@@ -65,10 +65,10 @@ async def process_document_pipeline(doc_id: str, s3_key: str):
                 doc.status = DocumentStatus.FAILED
                 return
 
-            dense_vecs = embedding_service.generate_embeddings(texts)
+            dense_vecs = await embedding_service.generate_embeddings(texts)
 
-            qdrant_service.ensure_collections()
-            points = _build_points(
+            await qdrant_service.ensure_collections()
+            points = await _build_points(
                 texts, dense_vecs,
                 payload_base={
                     "user_id": str(doc.user_id),
@@ -79,7 +79,7 @@ async def process_document_pipeline(doc_id: str, s3_key: str):
                 }
             )
 
-            qdrant_service.upsert_documents(points)
+            await qdrant_service.upsert_documents(points)
             doc.status = DocumentStatus.COMPLETED
             log.info("ingestion_task_success", doc_id=doc_id, chunks=len(points))
 
@@ -115,10 +115,10 @@ async def process_inline_paste_pipeline(doc_id: str, text_content: str):
                 doc.status = DocumentStatus.FAILED
                 return
 
-            dense_vecs = embedding_service.generate_embeddings(texts)
+            dense_vecs = await embedding_service.generate_embeddings(texts)
 
-            qdrant_service.ensure_collections()
-            points = _build_points(
+            await qdrant_service.ensure_collections()
+            points = await _build_points(
                 texts, dense_vecs,
                 payload_base={
                     "user_id": str(doc.user_id),
@@ -130,7 +130,7 @@ async def process_inline_paste_pipeline(doc_id: str, text_content: str):
                 }
             )
 
-            qdrant_service.upsert_chat_memory(points)
+            await qdrant_service.upsert_chat_memory(points)
             doc.status = DocumentStatus.COMPLETED
             log.info("inline_paste_ingestion_success", doc_id=doc_id, chunks=len(points))
 
@@ -143,23 +143,16 @@ async def process_inline_paste_pipeline(doc_id: str, text_content: str):
 
 @broker.task
 async def push_chat_history_to_qdrant(chat_id: str):
-    """
-    Push unchecked chat exchange pairs to Qdrant.
-    Each point = one user+assistant pair to preserve full Q&A context.
-    Triggered when accumulated token estimate of unchecked history exceeds threshold.
-    """
     log.info("chat_history_push_started", chat_id=chat_id)
 
     async with AsyncSessionLocal() as db:
         try:
-            # Fetch chat to get user_id and case_id for payload (issue #3)
             chat_result = await db.execute(select(Chat).where(Chat.id == chat_id))
             chat = chat_result.scalar_one_or_none()
             if not chat:
                 log.warning("chat_not_found_for_history_push", chat_id=chat_id)
                 return
 
-            # Fetch all unchecked non-system messages ordered by sequence
             result = await db.execute(
                 select(ChatMessage)
                 .where(
@@ -174,7 +167,6 @@ async def push_chat_history_to_qdrant(chat_id: str):
             if not messages:
                 return
 
-            # Issue #4 — group into user+assistant exchange pairs
             pairs: list[tuple[ChatMessage, ChatMessage]] = []
             i = 0
             while i < len(messages) - 1:
@@ -190,7 +182,6 @@ async def push_chat_history_to_qdrant(chat_id: str):
                 log.info("no_complete_pairs_to_push", chat_id=chat_id)
                 return
 
-            # Build combined text and collect message ids per pair
             pair_texts = []
             pair_message_ids = []
             for user_msg, assistant_msg in pairs:
@@ -198,12 +189,11 @@ async def push_chat_history_to_qdrant(chat_id: str):
                 pair_texts.append(combined)
                 pair_message_ids.append([str(user_msg.id), str(assistant_msg.id)])
 
-            dense_vecs = embedding_service.generate_embeddings(pair_texts)
-            sparse_vecs = sparse_embedder.embed_documents(pair_texts)
+            dense_vecs = await embedding_service.generate_embeddings(pair_texts)
+            sparse_vecs = await sparse_embedder.embed_documents(pair_texts)
 
-            qdrant_service.ensure_collections()
+            await qdrant_service.ensure_collections()
 
-            # Build points with message_ids in payload (issue #3 + #4)
             points = []
             for text, dense, sparse_vec, msg_ids, (user_msg, _) in zip(
                 pair_texts, dense_vecs, sparse_vecs, pair_message_ids, pairs
@@ -223,9 +213,8 @@ async def push_chat_history_to_qdrant(chat_id: str):
                     }
                 ))
 
-            qdrant_service.upsert_chat_memory(points)
+            await qdrant_service.upsert_chat_memory(points)
 
-            # Mark all pushed messages as is_in_qdrant=True
             pushed_ids = {msg_id for pair_ids in pair_message_ids for msg_id in pair_ids}
             for msg in messages:
                 if str(msg.id) in pushed_ids:
@@ -239,11 +228,6 @@ async def push_chat_history_to_qdrant(chat_id: str):
 
 
 async def should_push_chat_history(chat_id: str, db) -> bool:
-    """
-    Issue #5 — token-based threshold check.
-    Estimates token count of all unchecked messages.
-    Returns True if accumulated tokens exceed threshold.
-    """
     result = await db.execute(
         select(ChatMessage)
         .where(

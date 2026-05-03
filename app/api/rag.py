@@ -29,18 +29,9 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 AsyncDbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
-# How many unchecked pairs below which we top up with checked pairs
 RECENT_PAIRS_MIN = 5
 
-
 async def _get_recent_messages(chat_id: uuid.UUID, db: AsyncSession) -> list[ChatMessage]:
-    """
-    Dynamic recent messages fetch.
-    - Count unchecked (is_in_qdrant=False) non-system pairs
-    - If >= RECENT_PAIRS_MIN: return all unchecked messages
-    - If < RECENT_PAIRS_MIN: top up with last RECENT_PAIRS_MIN checked pairs to maintain continuity
-    """
-    # Fetch all unchecked non-system messages
     unchecked_result = await db.execute(
         select(ChatMessage)
         .where(
@@ -52,7 +43,6 @@ async def _get_recent_messages(chat_id: uuid.UUID, db: AsyncSession) -> list[Cha
     )
     unchecked = unchecked_result.scalars().all()
 
-    # Count complete pairs (user+assistant) in unchecked
     unchecked_pairs = sum(
         1 for i in range(len(unchecked) - 1)
         if unchecked[i].role == MessageRole.USER and unchecked[i + 1].role == MessageRole.ASSISTANT
@@ -60,8 +50,7 @@ async def _get_recent_messages(chat_id: uuid.UUID, db: AsyncSession) -> list[Cha
 
     if unchecked_pairs >= RECENT_PAIRS_MIN:
         return list(unchecked)
-
-    # Top up — fetch last RECENT_PAIRS_MIN checked pairs for continuity
+    
     checked_result = await db.execute(
         select(ChatMessage)
         .where(
@@ -70,7 +59,7 @@ async def _get_recent_messages(chat_id: uuid.UUID, db: AsyncSession) -> list[Cha
             ChatMessage.role != MessageRole.SYSTEM
         )
         .order_by(ChatMessage.sequence_index.desc())
-        .limit(RECENT_PAIRS_MIN * 2)  # *2 because each pair = 2 messages
+        .limit(RECENT_PAIRS_MIN * 2)
     )
     checked = list(reversed(checked_result.scalars().all()))
 
@@ -185,8 +174,7 @@ async def upload_document(
             detail=f"Case has reached the maximum limit of {settings.MAX_DOCS_PER_CASE} documents."
         )
 
-    content = await file.read()
-    if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
+    if file.size and file.size > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File exceeds the maximum allowed size of {settings.MAX_FILE_SIZE_MB}MB."
@@ -196,7 +184,7 @@ async def upload_document(
     file_ext = filename.split(".")[-1]
     s3_key = f"uploads/{current_user.id}/{case_id}/{uuid.uuid4()}.{file_ext}"
 
-    await s3_service.upload_file(content, s3_key)
+    await s3_service.upload_file(file, s3_key)
 
     new_doc = Document(
         user_id=current_user.id,
@@ -451,7 +439,6 @@ async def send_message(
     await db.commit()
     await db.refresh(user_message)
 
-    # Inline paste detection — frontend sends pasted_text as separate field
     if body.pasted_text:
         paste_doc = Document(
             user_id=current_user.id,
@@ -475,11 +462,9 @@ async def send_message(
             text_content=body.pasted_text
         )
 
-    # Token-based chat history push check (issue #5)
     if await should_push_chat_history(chat_id=str(chat_id), db=db):
         await push_chat_history_to_qdrant.kiq(chat_id=str(chat_id))
 
-    # Dynamic recent messages — handles post-push continuity (issue #5 fallback)
     recent_messages = await _get_recent_messages(chat_id=chat_id, db=db)
 
     retrieval_result = await retrieval_service.retrieve(

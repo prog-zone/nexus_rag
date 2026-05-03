@@ -98,8 +98,8 @@ class RetrievalService:
         all_history_results = []
 
         for sub_query in sub_queries:
-            dense_vector = embedding_service.generate_query_embedding(sub_query)
-            sparse_vector = sparse_embedder.embed_query(sub_query)
+            dense_vector = await embedding_service.generate_query_embedding(sub_query)
+            sparse_vector = await sparse_embedder.embed_query(sub_query)
 
             doc_results, paste_results, history_results = await asyncio.gather(
                 self._search_documents(dense_vector, sparse_vector, case_id, user_id, doc_hint),
@@ -137,7 +137,7 @@ class RetrievalService:
             log.info("pre_filter_applied", before=len(unique_doc_results + all_paste_results), after=len(chunks_to_rerank))
 
             texts = [c["text"] for c in chunks_to_rerank]
-            reranked = reranker_service.rerank(query=query, documents=texts, top_k=RERANK_TOP_K)
+            reranked = await reranker_service.rerank(query=query, documents=texts, top_k=RERANK_TOP_K)
 
             reranked_chunks = [
                 {
@@ -172,8 +172,7 @@ class RetrievalService:
         doc_hint: str | None = None
     ) -> list[dict]:
         try:
-            results = await asyncio.to_thread(
-                qdrant_service.search_documents,
+            results = await qdrant_service.search_documents(
                 dense_vector, sparse_vector, case_id, user_id,
                 top_k=QDRANT_FETCH_K, doc_hint=doc_hint
             )
@@ -200,8 +199,7 @@ class RetrievalService:
         source: str
     ) -> list[dict]:
         try:
-            results = await asyncio.to_thread(
-                qdrant_service.search_chat_memory,
+            results = await qdrant_service.search_chat_memory(
                 dense_vector, sparse_vector, chat_id, user_id, source
             )
             return [

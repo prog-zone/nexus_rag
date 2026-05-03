@@ -1,5 +1,6 @@
 import jwt
 import uuid
+import asyncio
 from typing import Annotated
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, Response, status
@@ -36,11 +37,12 @@ async def register(user_in: UserCreateSchema, background_tasks: BackgroundTasks,
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already exists")
     
     raw_otp = generate_otp()
+    hashed_pw = await get_password_hash(user_in.password)
 
     # Create user
     new_user = User(
         email=user_in.email,
-        hashed_password=get_password_hash(user_in.password),
+        hashed_password=hashed_pw,
         verification_code=get_otp_hash(raw_otp),
         verification_expire=datetime.now(timezone.utc) + timedelta(minutes=15),
         profile=Profile(full_name=user_in.full_name)
@@ -157,7 +159,7 @@ async def login(
     result = await db.execute(query)
     user = result.scalar_one_or_none()
     
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    if not user or not await verify_password(form_data.password, user.hashed_password):
         log.warning("login_failed_invalid_credentials")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect email or password")
     
@@ -348,7 +350,7 @@ async def forgot_password(
     if user:
         # Generate new OTP, hash it, and set expiration
         raw_otp = generate_otp()
-        user.resetpass_code = get_password_hash(raw_otp)
+        user.resetpass_code = await get_password_hash(raw_otp)
         user.resetpass_expire = datetime.now(timezone.utc) + timedelta(minutes=15)
 
         try:
@@ -393,11 +395,11 @@ async def reset_password(
         log.warning("password_reset_failed_expired")
         raise invalid_exc
 
-    if not verify_password(body.code, user.resetpass_code):
+    if not await verify_password(body.code, user.resetpass_code):
         log.warning("password_reset_failed_wrong_code")
         raise invalid_exc
 
-    user.hashed_password = get_password_hash(body.new_password)
+    user.hashed_password = await get_password_hash(body.new_password)
     user.resetpass_code = None
     user.resetpass_expire = None
     

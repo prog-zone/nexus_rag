@@ -85,7 +85,7 @@ async def change_password(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    if not verify_password(body.current_password, current_user.hashed_password):
+    if not await verify_password(body.current_password, current_user.hashed_password):
         log.warning("password_change_failed_wrong_current_password", user_id=str(current_user.id))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
@@ -98,7 +98,7 @@ async def change_password(
             detail="New password cannot be the same as the current password"
         )
 
-    current_user.hashed_password = get_password_hash(body.new_password)
+    current_user.hashed_password = await get_password_hash(body.new_password)
     
     # SECURITY CRITICAL: Log out all devices (including this one) 
     # to force them to log back in with the new credentials.

@@ -1,3 +1,4 @@
+import asyncio
 from fastembed import SparseTextEmbedding
 from qdrant_client.models import SparseVector
 from app.core.logger import log
@@ -10,9 +11,9 @@ class SparseEmbedderService:
             model_name="Qdrant/bm25"
         )
 
-    def embed_documents(self, texts: list[str]) -> list[SparseVector]:
+    async def embed_documents(self, texts: list[str]) -> list[SparseVector]:
         """Batch sparse embeddings for ingestion."""
-        results = list(self.model.embed(texts))
+        results = await asyncio.to_thread(lambda: list(self.model.embed(texts)))
         log.info("sparse_embeddings_generated", count=len(texts))
         return [
             SparseVector(
@@ -22,9 +23,9 @@ class SparseEmbedderService:
             for r in results
         ]
 
-    def embed_query(self, query: str) -> SparseVector:
+    async def embed_query(self, query: str) -> SparseVector:
         """Single sparse embedding for query time."""
-        result = list(self.model.query_embed(query))[0]
+        result = await asyncio.to_thread(lambda: list(self.model.query_embed(query))[0])
         return SparseVector(
             indices=result.indices.tolist(),
             values=result.values.tolist()

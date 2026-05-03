@@ -1,6 +1,7 @@
 import jwt
 import uuid
 import hashlib
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Union
 from pwdlib import PasswordHash
@@ -9,11 +10,11 @@ from app.core.config import settings
 # Uses argon2-cffi
 password_hash = PasswordHash.recommended()
 
-def get_password_hash(password: str) -> str:
-    return password_hash.hash(password)
+async def get_password_hash(password: str) -> str:
+    return await asyncio.to_thread(password_hash.hash, password)
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return password_hash.verify(plain_password, hashed_password)
+async def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return await asyncio.to_thread(password_hash.verify, plain_password, hashed_password)
 
 def get_otp_hash(otp: str) -> str:
     return hashlib.sha256(otp.encode()).hexdigest()

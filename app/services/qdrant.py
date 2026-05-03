@@ -1,4 +1,4 @@
-from qdrant_client import QdrantClient, models
+from qdrant_client import AsyncQdrantClient, models
 from app.core.config import settings
 from app.core.logger import log
 from typing import List
@@ -6,7 +6,7 @@ from typing import List
 
 class QdrantService:
     def __init__(self):
-        self.client = QdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
+        self.client = AsyncQdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
         self.documents_collection = "nexus_documents"
         self.chat_memory_collection = "nexus_chat_memory"
         self.dense_dim = 1024
@@ -26,9 +26,9 @@ class QdrantService:
             )
         }
 
-    def ensure_collections(self):
+    async def ensure_collections(self):
         if not self.client.collection_exists(self.documents_collection):
-            self.client.create_collection(
+            await self.client.create_collection(
                 collection_name=self.documents_collection,
                 vectors_config=self._vector_config(),
                 sparse_vectors_config=self._sparse_config()
@@ -36,26 +36,26 @@ class QdrantService:
             log.info("qdrant_collection_created", name=self.documents_collection)
 
         if not self.client.collection_exists(self.chat_memory_collection):
-            self.client.create_collection(
+            await self.client.create_collection(
                 collection_name=self.chat_memory_collection,
                 vectors_config=self._vector_config(),
                 sparse_vectors_config=self._sparse_config()
             )
             log.info("qdrant_collection_created", name=self.chat_memory_collection)
 
-    def upsert_documents(self, points: List[models.PointStruct]):
-        return self.client.upsert(
+    async def upsert_documents(self, points: List[models.PointStruct]):
+        return await self.client.upsert(
             collection_name=self.documents_collection,
             points=points
         )
 
-    def upsert_chat_memory(self, points: List[models.PointStruct]):
-        return self.client.upsert(
+    async def upsert_chat_memory(self, points: List[models.PointStruct]):
+        return await self.client.upsert(
             collection_name=self.chat_memory_collection,
             points=points
         )
 
-    def search_documents(
+    async def search_documents(
         self,
         dense_vector: list[float],
         sparse_vector: models.SparseVector,
@@ -85,26 +85,19 @@ class QdrantService:
             )
             log.info("doc_hint_filter_applied", doc_hint=doc_hint)
 
-        return self.client.query_points(
+        response = await self.client.query_points(
             collection_name=self.documents_collection,
             prefetch=[
-                models.Prefetch(
-                    query=dense_vector,
-                    using="dense",
-                    limit=top_k * 2
-                ),
-                models.Prefetch(
-                    query=sparse_vector,
-                    using="sparse",
-                    limit=top_k * 2
-                )
+                models.Prefetch(query=dense_vector, using="dense", limit=top_k * 2),
+                models.Prefetch(query=sparse_vector, using="sparse", limit=top_k * 2)
             ],
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             query_filter=models.Filter(must=list(must_conditions)),
             limit=top_k
-        ).points
+        )
+        return response.points
 
-    def search_chat_memory(
+    async def search_chat_memory(
         self,
         dense_vector: list[float],
         sparse_vector: models.SparseVector,
@@ -113,42 +106,26 @@ class QdrantService:
         source: str,
         top_k: int = 3
     ) -> list[models.ScoredPoint]:
-        return self.client.query_points(
+        response = await self.client.query_points(
             collection_name=self.chat_memory_collection,
             prefetch=[
-                models.Prefetch(
-                    query=dense_vector,
-                    using="dense",
-                    limit=top_k * 2
-                ),
-                models.Prefetch(
-                    query=sparse_vector,
-                    using="sparse",
-                    limit=top_k * 2
-                )
+                models.Prefetch(query=dense_vector, using="dense", limit=top_k * 2),
+                models.Prefetch(query=sparse_vector, using="sparse", limit=top_k * 2)
             ],
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             query_filter=models.Filter(
                 must=[
-                    models.FieldCondition(
-                        key="chat_id",
-                        match=models.MatchValue(value=chat_id)
-                    ),
-                    models.FieldCondition(
-                        key="user_id",
-                        match=models.MatchValue(value=user_id)
-                    ),
-                    models.FieldCondition(
-                        key="source",
-                        match=models.MatchValue(value=source)
-                    )
+                    models.FieldCondition(key="chat_id", match=models.MatchValue(value=chat_id)),
+                    models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+                    models.FieldCondition(key="source", match=models.MatchValue(value=source))
                 ]
             ),
             limit=top_k
-        ).points
+        )
+        return response.points
 
-    def delete_by_doc_id(self, doc_id: str):
-        self.client.delete(
+    async def delete_by_doc_id(self, doc_id: str):
+        await self.client.delete(
             collection_name=self.documents_collection,
             points_selector=models.FilterSelector(
                 filter=models.Filter(
@@ -163,8 +140,8 @@ class QdrantService:
         )
         log.info("qdrant_doc_vectors_deleted", doc_id=doc_id)
 
-    def delete_by_chat_id(self, chat_id: str):
-        self.client.delete(
+    async def delete_by_chat_id(self, chat_id: str):
+        await self.client.delete(
             collection_name=self.chat_memory_collection,
             points_selector=models.FilterSelector(
                 filter=models.Filter(

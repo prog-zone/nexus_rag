@@ -5,14 +5,14 @@ from app.core.logger import log
 
 class RerankerService:
     def __init__(self):
-        self.client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)  # type: ignore
+        self.client = voyageai.AsyncClient(api_key=settings.VOYAGE_API_KEY)  # type: ignore
         self.model = settings.VOYAGE_RERANKER_MODEL
         self.instruction = (
             "Prioritize exact clause matches and specific legal terminology. "
             "Prefer documents that contain the exact legal entity mentioned in the query."
         )
 
-    def rerank(
+    async def rerank(
         self,
         query: str,
         documents: list[str],
@@ -24,7 +24,7 @@ class RerankerService:
 
         instructed_query = f"{self.instruction}\n\nQuery: {query}"
 
-        result = self.client.rerank(
+        result = await self.client.rerank(
             query=instructed_query,
             documents=documents,
             model=self.model,

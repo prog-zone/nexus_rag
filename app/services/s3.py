@@ -1,4 +1,6 @@
 import aioboto3
+import aiofiles
+from fastapi import UploadFile
 from botocore.client import Config
 from app.core.config import settings
 from app.core.logger import log
@@ -16,13 +18,13 @@ class S3Service:
             "region_name": settings.S3_REGION,
         }
 
-    async def upload_file(self, file_content: bytes, object_name: str) -> str:
+    async def upload_file(self, file: UploadFile, object_name: str) -> str:
         try:
             async with self.session.client(**self.client_kwargs) as s3: # type: ignore
-                await s3.put_object(
-                    Bucket=settings.S3_BUCKET,
-                    Key=object_name,
-                    Body=file_content
+                await s3.upload_fileobj(
+                    file.file,
+                    settings.S3_BUCKET,
+                    object_name
                 )
             log.info("s3_upload_success", bucket=settings.S3_BUCKET, key=object_name)
             return object_name
