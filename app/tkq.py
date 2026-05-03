@@ -1,5 +1,6 @@
 import taskiq_redis
 from taskiq import TaskiqScheduler
+from taskiq.schedule_sources import LabelScheduleSource
 from taskiq_redis import RedisScheduleSource
 from app.core.config import settings
 
@@ -9,7 +10,10 @@ broker = taskiq_redis.ListQueueBroker(settings.REDIS_URL)
 # 2. Initialize Scheduler
 scheduler = TaskiqScheduler(
     broker=broker,
-    sources=[RedisScheduleSource(settings.REDIS_URL)],
+    sources=[
+        RedisScheduleSource(settings.REDIS_URL),
+        LabelScheduleSource(broker),
+        ],
 )
 
 # 3. Initialize FastAPI dependency injection

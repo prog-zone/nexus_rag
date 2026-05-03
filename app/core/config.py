@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # Redis Configuration
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # Document Upload Limit Setting
+    MAX_DOCS_PER_CASE: int = 20
+    MAX_FILE_SIZE_MB: int = 50
+
     # S3 Configuration
     S3_BUCKET: str = ""
     S3_ACCESS_KEY: str = ""

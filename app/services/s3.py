@@ -51,4 +51,13 @@ class S3Service:
             log.error("s3_download_failed", key=object_name, error=str(e))
             raise
 
+    async def delete_file(self, object_name: str) -> None:
+        try:
+            async with self.session.client(**self.client_kwargs) as s3:  # type: ignore
+                await s3.delete_object(Bucket=settings.S3_BUCKET, Key=object_name)
+            log.info("s3_delete_success", key=object_name)
+        except Exception as e:
+            log.error("s3_delete_failed", key=object_name, error=str(e))
+            raise
+
 s3_service = S3Service()

@@ -147,5 +147,36 @@ class QdrantService:
             limit=top_k
         ).points
 
+    def delete_by_doc_id(self, doc_id: str):
+        self.client.delete(
+            collection_name=self.documents_collection,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="doc_id",
+                            match=models.MatchValue(value=doc_id)
+                        )
+                    ]
+                )
+            )
+        )
+        log.info("qdrant_doc_vectors_deleted", doc_id=doc_id)
+
+    def delete_by_chat_id(self, chat_id: str):
+        self.client.delete(
+            collection_name=self.chat_memory_collection,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="chat_id",
+                            match=models.MatchValue(value=chat_id)
+                        )
+                    ]
+                )
+            )
+        )
+        log.info("qdrant_chat_vectors_deleted", chat_id=chat_id)
 
 qdrant_service = QdrantService()

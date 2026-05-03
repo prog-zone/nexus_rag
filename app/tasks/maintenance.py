@@ -5,7 +5,8 @@ from app.core.database import AsyncSessionLocal
 from app.models.user import UserRefreshToken
 from app.core.logger import log
 
-@broker.task
+
+@broker.task(schedule=[{"cron": "0 3 * * *"}])
 async def cleanup_expired_tokens():
     async with AsyncSessionLocal() as session:
         try:
@@ -18,3 +19,4 @@ async def cleanup_expired_tokens():
         except Exception as e:
             await session.rollback()
             log.error("token_cleanup_failed", error=str(e))
+            

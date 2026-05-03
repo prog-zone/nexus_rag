@@ -1,4 +1,5 @@
 import uuid
+import asyncio
 from typing import Annotated
 from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, UploadFile, Depends, HTTPException, status
@@ -8,7 +9,9 @@ from sqlalchemy import select, func
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.logger import log
+from app.core.config import settings
 from app.services.s3 import s3_service
+from app.services.qdrant import qdrant_service
 from app.services.llm import llm_service
 from app.services.retrieval import retrieval_service
 from app.models.user import User
@@ -170,11 +173,29 @@ async def upload_document(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
 
+    doc_count_result = await db.execute(
+        select(func.count()).where(
+            Document.case_id == case_id,
+            Document.source == DocumentSource.UPLOAD
+        )
+    )
+    if (doc_count_result.scalar() or 0) >= settings.MAX_DOCS_PER_CASE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Case has reached the maximum limit of {settings.MAX_DOCS_PER_CASE} documents."
+        )
+
+    content = await file.read()
+    if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File exceeds the maximum allowed size of {settings.MAX_FILE_SIZE_MB}MB."
+        )
+
     filename = file.filename or "unknown"
     file_ext = filename.split(".")[-1]
     s3_key = f"uploads/{current_user.id}/{case_id}/{uuid.uuid4()}.{file_ext}"
 
-    content = await file.read()
     await s3_service.upload_file(content, s3_key)
 
     new_doc = Document(
@@ -249,6 +270,12 @@ async def delete_document(
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    
+    if doc.s3_key:
+        await s3_service.delete_file(doc.s3_key)
+    
+    await asyncio.to_thread(qdrant_service.delete_by_doc_id, str(doc_id))
+
     await db.delete(doc)
     await db.commit()
     log.info("document_deleted", doc_id=str(doc_id), case_id=str(case_id))
@@ -359,6 +386,8 @@ async def delete_chat(
     chat = result.scalar_one_or_none()
     if not chat:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    
+    await asyncio.to_thread(qdrant_service.delete_by_chat_id, str(chat_id))
     await db.delete(chat)
     await db.commit()
     log.info("chat_deleted", chat_id=str(chat_id), case_id=str(case_id))
