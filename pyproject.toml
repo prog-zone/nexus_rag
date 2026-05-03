@@ -27,6 +27,7 @@ dependencies = [
     "fastembed",
     "aioboto3",
     "voyageai",
+    "ragas",
 ]
 
 [dependency-groups]
@@ -44,3 +45,6 @@ entrypoint = "app.main:app"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+markers = [
+    "ragas: marks tests as RAGAS evaluation tests (slow, requires OpenAI API)",
+]
