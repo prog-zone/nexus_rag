@@ -5,7 +5,7 @@ from app.core.logger import log
 
 class RerankerService:
     def __init__(self):
-        self.client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)
+        self.client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)  # type: ignore
         self.model = settings.VOYAGE_RERANKER_MODEL
         self.instruction = (
             "Prioritize exact clause matches and specific legal terminology. "

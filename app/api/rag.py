@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, UploadFile, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
@@ -19,12 +19,66 @@ from app.schemas.rag import (
     CreateChatSchema, UpdateChatSchema, ChatSchema,
     SendMessageSchema, ChatMessageSchema, ChatHistorySchema
 )
-from app.tasks.ingestion import process_document_pipeline, process_inline_paste_pipeline
+from app.tasks.ingestion import process_document_pipeline, process_inline_paste_pipeline, push_chat_history_to_qdrant, should_push_chat_history
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
 AsyncDbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+# How many unchecked pairs below which we top up with checked pairs
+RECENT_PAIRS_MIN = 5
+
+
+async def _get_recent_messages(chat_id: uuid.UUID, db: AsyncSession) -> list[ChatMessage]:
+    """
+    Dynamic recent messages fetch.
+    - Count unchecked (is_in_qdrant=False) non-system pairs
+    - If >= RECENT_PAIRS_MIN: return all unchecked messages
+    - If < RECENT_PAIRS_MIN: top up with last RECENT_PAIRS_MIN checked pairs to maintain continuity
+    """
+    # Fetch all unchecked non-system messages
+    unchecked_result = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.chat_id == chat_id,
+            ChatMessage.is_in_qdrant == False,
+            ChatMessage.role != MessageRole.SYSTEM
+        )
+        .order_by(ChatMessage.sequence_index.asc())
+    )
+    unchecked = unchecked_result.scalars().all()
+
+    # Count complete pairs (user+assistant) in unchecked
+    unchecked_pairs = sum(
+        1 for i in range(len(unchecked) - 1)
+        if unchecked[i].role == MessageRole.USER and unchecked[i + 1].role == MessageRole.ASSISTANT
+    )
+
+    if unchecked_pairs >= RECENT_PAIRS_MIN:
+        return list(unchecked)
+
+    # Top up — fetch last RECENT_PAIRS_MIN checked pairs for continuity
+    checked_result = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.chat_id == chat_id,
+            ChatMessage.is_in_qdrant == True,
+            ChatMessage.role != MessageRole.SYSTEM
+        )
+        .order_by(ChatMessage.sequence_index.desc())
+        .limit(RECENT_PAIRS_MIN * 2)  # *2 because each pair = 2 messages
+    )
+    checked = list(reversed(checked_result.scalars().all()))
+
+    log.info(
+        "recent_messages_topped_up",
+        chat_id=str(chat_id),
+        unchecked_pairs=unchecked_pairs,
+        checked_added=len(checked)
+    )
+
+    return checked + list(unchecked)
 
 
 @router.post("/cases", response_model=CaseSchema, status_code=status.HTTP_201_CREATED)
@@ -337,8 +391,6 @@ async def get_chat_messages(
     return {"chat": chat, "messages": messages}
 
 
-INLINE_PASTE_THRESHOLD = 500
-
 @router.post("/cases/{case_id}/chats/{chat_id}/message")
 async def send_message(
     case_id: uuid.UUID,
@@ -370,7 +422,8 @@ async def send_message(
     await db.commit()
     await db.refresh(user_message)
 
-    if len(body.content) > INLINE_PASTE_THRESHOLD:
+    # Inline paste detection — frontend sends pasted_text as separate field
+    if body.pasted_text:
         paste_doc = Document(
             user_id=current_user.id,
             case_id=case_id,
@@ -390,16 +443,15 @@ async def send_message(
 
         await process_inline_paste_pipeline.kiq(
             doc_id=str(paste_doc.id),
-            text_content=body.content
+            text_content=body.pasted_text
         )
 
-    result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.chat_id == chat_id)
-        .order_by(ChatMessage.sequence_index.desc())
-        .limit(10)
-    )
-    recent_messages = list(reversed(result.scalars().all()))
+    # Token-based chat history push check (issue #5)
+    if await should_push_chat_history(chat_id=str(chat_id), db=db):
+        await push_chat_history_to_qdrant.kiq(chat_id=str(chat_id))
+
+    # Dynamic recent messages — handles post-push continuity (issue #5 fallback)
+    recent_messages = await _get_recent_messages(chat_id=chat_id, db=db)
 
     retrieval_result = await retrieval_service.retrieve(
         query=body.content,
@@ -416,7 +468,8 @@ async def send_message(
     log.info(
         "message_pipeline_complete",
         chat_id=str(chat_id),
-        has_context=retrieval_result["has_relevant_context"]
+        has_context=retrieval_result["has_relevant_context"],
+        recent_messages_count=len(recent_messages)
     )
 
     return StreamingResponse(

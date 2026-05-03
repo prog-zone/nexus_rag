@@ -24,6 +24,7 @@ dependencies = [
     "taskiq",
     "taskiq-redis",
     "taskiq-fastapi",
+    "fastembed",
     "aioboto3",
     "voyageai",
 ]

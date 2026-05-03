@@ -31,7 +31,6 @@ class DocumentSchema(BaseModel):
     case_id: uuid.UUID
     chat_id: Optional[uuid.UUID]
     filename: str
-    s3_key: str
     source: DocumentSource
     status: DocumentStatus
     created_at: datetime
@@ -67,6 +66,7 @@ class ChatSchema(BaseModel):
 
 class SendMessageSchema(BaseModel):
     content: str = Field(..., min_length=1, max_length=50000)
+    pasted_text: Optional[str] = Field(None, max_length=100000)
 
 class ChatMessageSchema(BaseModel):
     id: uuid.UUID

@@ -11,7 +11,7 @@ class UnstructuredService:
             api_key_auth=settings.UNSTRUCTURED_API_KEY,
         )
 
-    async def partition_file_content(self, content: bytes, filename: str):
+    async def partition_file_content(self, content: bytes, filename: str, use_hi_res: bool = True):
         files = shared.Files(
             content=content,
             file_name=filename,
@@ -20,7 +20,7 @@ class UnstructuredService:
         req = operations.PartitionRequest(
             partition_parameters=shared.PartitionParameters(
                 files=files,
-                strategy=shared.Strategy.HI_RES,
+                strategy=shared.Strategy.HI_RES if use_hi_res else shared.Strategy.AUTO,
                 chunking_strategy="by_title",
                 max_characters=4000,
                 combine_under_n_chars=500,

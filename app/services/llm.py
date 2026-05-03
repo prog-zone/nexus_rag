@@ -8,7 +8,6 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.logger import log
 from app.models.rag import Chat, ChatMessage, MessageRole
-from app.tasks.ingestion import push_chat_history_to_qdrant
 
 
 SYSTEM_PROMPT = """You are Nexus, a precise legal AI assistant. You help lawyers and legal teams analyze case documents with maximum accuracy.
@@ -97,7 +96,7 @@ class LLMService:
 
             stream = await self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=messages,  # type: ignore
                 stream=True,
                 temperature=0.1,
                 max_tokens=2048
@@ -133,7 +132,6 @@ class LLMService:
         user_message: ChatMessage,
         db: AsyncSession
     ):
-
         try:
             assistant_msg = ChatMessage(
                 chat_id=chat.id,
@@ -146,9 +144,6 @@ class LLMService:
             db.add(assistant_msg)
             chat.message_count += 2
             await db.commit()
-
-            if chat.message_count > 10:
-                await push_chat_history_to_qdrant.kiq(chat_id=str(chat.id))
 
             log.info("assistant_message_saved", chat_id=str(chat.id))
 

@@ -61,8 +61,30 @@ class QdrantService:
         sparse_vector: models.SparseVector,
         case_id: str,
         user_id: str,
-        top_k: int = 5
+        top_k: int = 15,
+        doc_hint: str | None = None
     ) -> list[models.ScoredPoint]:
+
+        must_conditions = [
+            models.FieldCondition(
+                key="case_id",
+                match=models.MatchValue(value=case_id)
+            ),
+            models.FieldCondition(
+                key="user_id",
+                match=models.MatchValue(value=user_id)
+            ),
+        ]
+
+        if doc_hint:
+            must_conditions.append(
+                models.FieldCondition(
+                    key="doc_name",
+                    match=models.MatchText(text=doc_hint)
+                )
+            )
+            log.info("doc_hint_filter_applied", doc_hint=doc_hint)
+
         return self.client.query_points(
             collection_name=self.documents_collection,
             prefetch=[
@@ -78,18 +100,7 @@ class QdrantService:
                 )
             ],
             query=models.FusionQuery(fusion=models.Fusion.RRF),
-            query_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="case_id",
-                        match=models.MatchValue(value=case_id)
-                    ),
-                    models.FieldCondition(
-                        key="user_id",
-                        match=models.MatchValue(value=user_id)
-                    )
-                ]
-            ),
+            query_filter=models.Filter(must=list(must_conditions)),
             limit=top_k
         ).points
 
@@ -98,6 +109,7 @@ class QdrantService:
         dense_vector: list[float],
         sparse_vector: models.SparseVector,
         chat_id: str,
+        user_id: str,
         source: str,
         top_k: int = 3
     ) -> list[models.ScoredPoint]:
@@ -121,6 +133,10 @@ class QdrantService:
                     models.FieldCondition(
                         key="chat_id",
                         match=models.MatchValue(value=chat_id)
+                    ),
+                    models.FieldCondition(
+                        key="user_id",
+                        match=models.MatchValue(value=user_id)
                     ),
                     models.FieldCondition(
                         key="source",
