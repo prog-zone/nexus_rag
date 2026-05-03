@@ -1,7 +1,7 @@
 import taskiq_redis
 from taskiq import TaskiqScheduler
 from taskiq.schedule_sources import LabelScheduleSource
-from taskiq_redis import RedisScheduleSource
+from taskiq_redis import ListRedisScheduleSource
 from app.core.config import settings
 
 # 1. Initialize Broker
@@ -11,7 +11,7 @@ broker = taskiq_redis.ListQueueBroker(settings.REDIS_URL)
 scheduler = TaskiqScheduler(
     broker=broker,
     sources=[
-        RedisScheduleSource(settings.REDIS_URL),
+        ListRedisScheduleSource(settings.REDIS_URL),
         LabelScheduleSource(broker),
         ],
 )

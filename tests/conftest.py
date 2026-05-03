@@ -1,4 +1,6 @@
+import random
 import pytest
+from httpx import AsyncClient, ASGITransport
 import pytest_asyncio
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -42,7 +44,32 @@ async def setup_test_database():
     
     await test_engine.dispose()
 
-# 4. Override the FastAPI dependency
+# 4. Provide a logged-in client fixture for tests that require authentication
+@pytest_asyncio.fixture(scope="session")
+async def logged_in_client(session_mocker):
+    session_mocker.patch("app.api.auth.send_verification_email")
+    session_mocker.patch("app.api.auth.generate_otp", return_value="123456")
+    
+    random_ip = f"10.0.0.{random.randint(1, 250)}"
+    transport = ASGITransport(app=app, client=(random_ip, 12345))
+    
+    async with AsyncClient(transport=transport, base_url="https://testserver") as client:
+        await client.post("/api/v1/auth/register", json={
+            "email": "raguser@example.com",
+            "password": "StrongPassword123!",
+            "full_name": "RAG Test User"
+        })
+        await client.post("/api/v1/auth/verify-email", json={
+            "email": "raguser@example.com",
+            "code": "123456"
+        })
+        await client.post("/api/v1/auth/login", data={
+            "username": "raguser@example.com",
+            "password": "StrongPassword123!"
+        })
+        yield client
+
+# 5. Override the FastAPI dependency
 async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
     """Hands out test database sessions instead of real ones."""
     async with TestingSessionLocal() as session:
