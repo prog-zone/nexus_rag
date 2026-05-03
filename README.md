@@ -1,114 +1,182 @@
-# FastAPI Production-Ready Starter Template
+# Nexus RAG
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi)
+![Python](https://img.shields.io/badge/Python-3.13-blue.svg)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-009688.svg?logo=fastapi)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-316192.svg?logo=postgresql)
-![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED.svg?logo=docker)
+![Qdrant](https://img.shields.io/badge/Qdrant-hybrid_search-red.svg)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg?logo=docker)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
-A robust, async-first FastAPI starter template designed to accelerate the development of secure and scalable web applications. 
+A backend API for AI-assisted legal document analysis. Lawyers and legal teams upload case documents, then query them through a chat interface — getting accurate, source-cited answers grounded strictly in their own files.
 
-## 💡 Why This Template?
+Built with FastAPI, Qdrant, and GPT-4o. Fully async, Dockerized, and production-ready.
 
-In today's fast-paced market, shipping quickly is a key selling point. I repeatedly found myself losing days deciding on project structures or setting up baseline authentication for FastAPI, sometimes even retreating to Django just for its "batteries-included" convenience. 
+---
 
-While third-party FastAPI auth libraries or massive boilerplates exist, they often hide the implementation details or come stuffed with bloat that takes days to strip away. I built this setup to solve that problem. It provides exactly what you need to start a new project—a highly secure, production-ready authentication and database foundation—while keeping the ultimate superpower of control entirely in your hands. Zero bloat, out-of-the-box security, and fast shipping.
+## The Core Idea
 
-## ✨ Key Features & Technical Details
+Legal work involves reading through contracts, case files, and agreements looking for specific clauses, obligations, or precedents. Nexus lets you upload those documents into a **case** (a workspace), open a **chat**, and ask questions like:
 
-* **Modern Async Stack:** Fully asynchronous operations using FastAPI, SQLAlchemy 2.0 (Asyncpg), and Async Alembic migrations.
-* **Hardened Authentication:** * JWT-based auth utilizing **HttpOnly, Secure cookies** to prevent XSS.
-  * **JTI-based refresh token rotation** with built-in token theft detection (automatically wipes compromised sessions).
-  * Argon2 password hashing via `pwdlib`.
-  * Custom Pydantic validators enforcing strict password strength.
-* **User Management:** Registration, login, profile updates, and role-based access control (User, Admin, Superuser).
-* **Email Services:** Integrated OTP-based email verification and password reset flows using `fastapi-mail`.
-* **Security & Reliability:** * IP-based rate limiting via `slowapi` to prevent brute-force attacks.
-  * Background tasks for automated database maintenance (e.g., cleaning expired tokens).
-* **Structured Logging:** Configured with `structlog` to output JSON logs, making it instantly compatible with observability stacks like ELK or Grafana Loki.
-* **Containerization:** Fully dockerized with `docker-compose` setups for both the API and a local PostgreSQL + pgAdmin environment.
-* **Dependency Management:** Uses `uv` for incredibly fast package management and dependency resolution.
+> *"What does clause 9b say about termination?"*
+> *"Compare the indemnity clauses across both contracts."*
+> *"What are the payment obligations in the service agreement?"*
 
-## 🏗️ Tech Stack
+The system finds the relevant chunks, reranks them, and streams a grounded response — with mandatory source citations. If the answer isn't in the documents, it says so explicitly. It never guesses.
 
-* **Framework:** FastAPI
-* **Database & ORM:** PostgreSQL, SQLAlchemy 2.0, Asyncpg, Alembic
-* **Authentication:** PyJWT, Pwdlib (Argon2)
-* **Infrastructure:** Docker, Docker Compose
-* **Tooling:** uv, Uvicorn, Gunicorn, Structlog
+> *"The system is intentionally restricted to uploaded case documents to prevent hallucination of legal facts from unverified sources."*
+---
 
-## 📂 Project Structure
+## How the RAG Pipeline Works
 
-```text
-├── app/
-│   ├── api/          # API routers, endpoints, and dependency injections
-│   ├── core/         # App configuration, security, db setup, rate limiting, and logging
-│   ├── models/       # SQLAlchemy async database models
-│   ├── schemas/      # Pydantic models for strict request/response validation
-│   └── services/     # Business logic layer
-├── alembic/          # Database migration scripts (Async configured)
-├── pyproject.toml    # Project metadata and uv dependencies
-└── docker-compose.* # Docker orchestration files
+Every message goes through this pipeline:
+
+```
+User Query
+    │
+    ▼
+Query Understanding  ← GPT-4o extracts: query type, exact legal entity,
+    │                  document hint, and sub-queries
+    ▼
+Hybrid Search (parallel, per sub-query)
+    │   Dense vectors  →  VoyageAI voyage-law-2 (1024-dim, legal-optimized)
+    │   Sparse vectors →  BM25 (FastEmbed)
+    │   Fusion         →  Reciprocal Rank Fusion (RRF) in Qdrant
+    │   Sources        →  case documents + inline pastes + chat memory
+    ▼
+Pre-filter → top-8 by score, deduplicated
+    ▼
+Reranking  ← VoyageAI rerank-2.5 with legal-domain instruction
+    │         Relevance threshold: 0.3 (below this = no context found)
+    ▼
+GPT-4o (streamed via SSE)
+    │   Strict system prompt: cite sources, never hallucinate,
+    │   admit when the answer isn't in the documents
+    ▼
+Saved to DB + chat memory tracked for future retrieval
 ```
 
-## 🚀 Getting Started
+**Why hybrid search?** Dense vectors understand meaning but miss exact matches — clause numbers, party names, specific legal terms. BM25 catches those. RRF fusion combines both without needing to tune weights.
 
-### Prerequisites
+**Why VoyageAI over OpenAI embeddings?** `voyage-law-2` is trained specifically on legal text. Clause references and legal terminology embed more accurately.
 
-* [Docker](https://www.docker.com/) and Docker Compose
-* Python 3.10+ (for local development)
-* [uv](https://github.com/astral-sh/uv) (for local dependency management)
+**Why query decomposition?** A question like *"compare the termination clauses in contract A and B"* gets split into two sub-queries, each searched independently, then merged before reranking. A single query would miss one of them.
 
-### 1. Environment Setup
+**Chat memory in Qdrant:** Once a conversation grows past ~6,000 estimated tokens, past exchanges get vectorized and pushed to a separate Qdrant collection. Future queries can then retrieve relevant past conversation context the same way they retrieve documents.
 
-Clone the repository and set up your environment variables:
+---
+
+## Data Model
+
+```
+User
+ └── Cases (workspaces, e.g. "Smith vs Jones")
+      ├── Documents (uploaded files, stored in S3)
+      └── Chats
+           └── Messages (user + assistant turns, tracked for memory)
+```
+
+Documents have a lifecycle: `PENDING → PROCESSING → COMPLETED / FAILED`, managed by async background tasks.
+
+---
+
+## Tech Stack
+
+| | |
+|---|---|
+| **API** | FastAPI (async), Python 3.13 |
+| **Database** | PostgreSQL, SQLAlchemy (async), Alembic |
+| **Vector DB** | Qdrant — two collections: documents + chat memory |
+| **Embeddings** | VoyageAI voyage-law-2 (dense) + BM25/FastEmbed (sparse) |
+| **Reranker** | VoyageAI rerank-2.5 |
+| **LLM** | GPT-4o, streamed via SSE |
+| **Document Parsing** | Unstructured API (hi-res OCR, chunked by title) |
+| **File Storage** | S3-compatible (MinIO for local dev) |
+| **Task Queue** | Taskiq + Redis (background ingestion + scheduled cleanup) |
+| **Auth** | JWT + Argon2 + OTP email verification |
+| **RAG Evaluation** | RAGAS (context precision, recall, faithfulness, answer relevancy) |
+
+---
+
+## Auth
+
+- Access tokens (15 min) + refresh tokens (7 days), both as HttpOnly cookies
+- Refresh tokens stored in the database — revoked on logout, password change, and account deletion
+- Rotating refresh tokens: if a used token is replayed, all sessions for that user are immediately wiped (token theft detection)
+- OTP-based email verification and password reset, hashed with SHA-256, expire in 15 minutes
+- Argon2 password hashing (async, off the event loop)
+- Rate limiting on sensitive endpoints — proxy-header-aware IP detection
+- Security headers on every response: HSTS, X-Frame-Options, X-Content-Type-Options, XSS protection
+
+---
+
+## Document Ingestion Flow
+
+```
+POST /cases/{id}/documents
+    │
+    ├── File size check (configurable limit)
+    ├── Doc count check per case (configurable limit)
+    ├── Upload to S3
+    ├── DB record created (status: PENDING)
+    └── Background task queued (Taskiq → Redis)
+            │
+            ├── Fetch file content from S3
+            ├── Unstructured API → hi-res parsing, chunked by title
+            ├── Dense + sparse embeddings generated
+            ├── Points upserted to Qdrant (documents collection)
+            └── Status updated → COMPLETED or FAILED
+```
+
+Inline text pastes follow the same pipeline (with `AUTO` strategy) and land in the chat memory collection instead.
+
+---
+
+## Running Locally
 
 ```bash
-git clone https://github.com/prog-zone/fastapi_setup
-cd fastapi_setup
-cp .env.example .env
+git clone https://github.com/yourusername/nexus-rag.git
+cd nexus-rag
+cp .env.example .env   # fill in your API keys
 ```
-*Make sure to update the `.env` file with your specific database credentials, JWT secrets, and SMTP settings.*
 
-### 2. Running with Docker (API & Database)
-
-This command starts the PostgreSQL database, automatically applies Alembic migrations, and spins up the FastAPI server via Gunicorn.
-
+Start infrastructure:
 ```bash
-docker-compose up --build
+docker compose -f docker-compose.local.yml up -d
+# Starts: PostgreSQL, Qdrant, Redis, MinIO, pgAdmin
 ```
-* **API Health Check:** `http://localhost:8000/api/v1/health`
-* **Interactive API Docs:** `http://localhost:8000/docs`
 
-### 3. Local Development (Local API + Docker Database)
-
-If you prefer to run the API locally on your host machine for easier debugging, while keeping the database and management tools containerized:
-
-**Start the local database and pgAdmin:**
-```bash
-docker-compose -f docker-compose.local.yml up -d
-```
-* **pgAdmin:** `http://localhost:5050` (Login with credentials from `.env`)
-
-**Install dependencies and run migrations:**
+Run the API:
 ```bash
 uv sync
 alembic upgrade head
-```
-
-**Start the FastAPI development server:**
-```bash
 fastapi dev app/main.py
 ```
 
-## 🧪 Testing
+Docs at `http://localhost:8000/docs`
 
-This template is configured for testing using `pytest` and `httpx`. To run the test suite locally:
-
+**Production:**
 ```bash
-uv run pytest
+docker compose up -d
+# Runs migrations automatically, binds to 127.0.0.1:8000
 ```
 
-## 🛡️ License
+---
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## Tests
+
+Tests run against an isolated `_test` database — created fresh before each run, dropped after.
+
+```bash
+pytest          # integration + unit tests
+pytest -m ragas # RAG quality evaluation (slow, needs live API keys)
+```
+
+Test coverage: auth flows, user endpoints, full RAG endpoint suite (cases, documents, chats, messaging), JWT security (forged signatures, expired tokens), CORS, security headers.
+
+RAGAS evaluation measures context precision, context recall, faithfulness, and answer relevancy — separately for retrieval-only and end-to-end pipeline.
+
+---
+
+## License
+
+MIT
