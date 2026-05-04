@@ -44,9 +44,12 @@ class VerifyEmailRequestSchema(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
-class ResetPasswordRequest(BaseModel):
+class VerifyResetCodeRequest(BaseModel):
     email: EmailStr
     code: str
+
+class ResetPasswordRequest(BaseModel):
+    reset_token: str
     new_password: StrongPassword
 
 class ProfileBaseSchema(BaseModel):

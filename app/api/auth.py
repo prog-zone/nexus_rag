@@ -1,6 +1,5 @@
 import jwt
 import uuid
-import asyncio
 from typing import Annotated
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, Response, status
@@ -11,11 +10,11 @@ from sqlalchemy import select, delete
 from app.core.logger import log
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import get_password_hash, verify_password, get_otp_hash, verify_otp_hash, create_access_token, create_refresh_token
+from app.core.security import get_password_hash, verify_password, get_otp_hash, verify_otp_hash, create_access_token, create_refresh_token, create_reset_token
 from app.core.limiter import limiter
 from app.api.deps import get_current_user
 from app.models.user import User, Profile, UserRefreshToken
-from app.schemas.user import UserCreateSchema, UserSchema, UserBaseSchema, VerifyEmailRequestSchema, ForgotPasswordRequest, ResetPasswordRequest
+from app.schemas.user import UserCreateSchema, UserSchema, UserBaseSchema, VerifyEmailRequestSchema, ForgotPasswordRequest, ResetPasswordRequest, VerifyResetCodeRequest
 from app.core.email import send_verification_email, generate_otp, send_reset_password_email
 
 
@@ -25,7 +24,6 @@ AsyncDbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 LoginFormData = Annotated[OAuth2PasswordRequestForm, Depends()]
 DB_ERROR_MSG = "Database error occurred"
-
 
 @router.post("/register", response_model=UserSchema)
 async def register(user_in: UserCreateSchema, background_tasks: BackgroundTasks, db: AsyncDbSession):
@@ -348,9 +346,8 @@ async def forgot_password(
     user = result.scalar_one_or_none()
 
     if user:
-        # Generate new OTP, hash it, and set expiration
         raw_otp = generate_otp()
-        user.resetpass_code = await get_password_hash(raw_otp)
+        user.resetpass_code = get_otp_hash(raw_otp) 
         user.resetpass_expire = datetime.now(timezone.utc) + timedelta(minutes=15)
 
         try:
@@ -367,11 +364,11 @@ async def forgot_password(
     return {"message": "If that email exists in our system, a password reset code has been sent."}
 
 
-@router.post("/reset-password")
+@router.post("/verify-reset-code")
 @limiter.limit("5/minute")
-async def reset_password(
+async def verify_reset_code(
     request: Request,
-    body: ResetPasswordRequest,
+    body: VerifyResetCodeRequest,
     db: AsyncDbSession
 ):
     query = select(User).where(User.email == body.email)
@@ -383,27 +380,49 @@ async def reset_password(
         detail="Invalid or expired reset request"
     )
 
-    if not user:
-        log.warning("password_reset_failed_user_not_found")
-        raise invalid_exc
-        
-    if not user.resetpass_code or not user.resetpass_expire:
-        log.warning("password_reset_failed_no_request_active")
+    if not user or not user.resetpass_code or not user.resetpass_expire:
         raise invalid_exc
 
     if datetime.now(timezone.utc) > user.resetpass_expire:
-        log.warning("password_reset_failed_expired")
         raise invalid_exc
 
-    if not await verify_password(body.code, user.resetpass_code):
-        log.warning("password_reset_failed_wrong_code")
+    if not verify_otp_hash(body.code, user.resetpass_code):
         raise invalid_exc
 
-    user.hashed_password = await get_password_hash(body.new_password)
     user.resetpass_code = None
     user.resetpass_expire = None
+    await db.commit()
+
+    reset_token = create_reset_token(user.id)
     
-    # SECURITY CRITICAL: Invalidate all existing sessions (Logout from all devices)
+    return {"reset_token": reset_token, "message": "Code verified. Proceed to reset password."}
+
+
+@router.post("/reset-password")
+@limiter.limit("5/minute")
+async def reset_password(
+    request: Request,
+    body: ResetPasswordRequest,
+    db: AsyncDbSession
+):
+    try:
+        payload = jwt.decode(body.reset_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        if payload.get("type") != "reset":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token type")
+        user_id = uuid.UUID(payload.get("sub"))
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+
+    query = select(User).where(User.id == user_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    user.hashed_password = await get_password_hash(body.new_password)
+    
+    # Invalidate all existing sessions
     try:
         delete_sessions_query = delete(UserRefreshToken).where(UserRefreshToken.user_id == user.id)
         await db.execute(delete_sessions_query)
