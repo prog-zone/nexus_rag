@@ -163,16 +163,51 @@ docker compose up -d
 
 ---
 
+## Downloads
+
+`GET /cases/{case_id}/documents/{doc_id}/download` returns a short-lived
+pre-signed S3 URL for the original upload (`expires_in` is
+`DOCUMENT_URL_EXPIRE_SECONDS`, 900 by default). Inline pastes have no stored
+object and answer `400`.
+
+---
+
 ## Tests
 
-Tests run against an isolated `_test` database — created fresh before each run, dropped after.
+The suite is self-contained: it runs against a throwaway SQLite database and an
+in-process Qdrant, so no infrastructure and no API keys are needed.
 
 ```bash
-pytest          # integration + unit tests
-pytest -m ragas # RAG quality evaluation (slow, needs live API keys)
+pip install -e ".[dev]"      # or: uv sync --group dev
+pytest                       # integration + unit tests
+pytest -m ragas              # RAG quality evaluation (slow, needs live API keys)
 ```
 
-Test coverage: auth flows, user endpoints, full RAG endpoint suite (cases, documents, chats, messaging), JWT security (forged signatures, expired tokens), CORS, security headers.
+Point it at PostgreSQL instead when you want to exercise the production
+backend — the schema is created and dropped per run, exactly as before:
+
+```bash
+TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/project_db_test pytest
+```
+
+Test coverage: auth flows, user endpoints, the full RAG endpoint suite (cases,
+documents, chats, messaging, deletion), vector-store bootstrap and filtered
+search, retrieval context assembly, prompt construction, ingestion guards,
+JWT security (forged signatures, expired tokens), rate limiting, CORS and
+security headers.
+
+## Configuration Notes
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PROJECT_NAME` | `Nexus RAG` | API title, shown in `/api/v1/health` |
+| `TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs/CIDRs allowed to set `X-Forwarded-For`. Empty means the header is ignored, so the rate limits key on the socket peer. Set it to your load balancer address. |
+| `RAG_QDRANT_FETCH_K` | `15` | Candidates fetched per sub-query from Qdrant |
+| `RAG_PRE_FILTER_K` | `8` | Candidates kept before reranking |
+| `RAG_RERANK_TOP_K` | `3` | Chunks returned by the reranker |
+| `RAG_RELEVANCE_THRESHOLD` | `0.3` | Chunks below this score are dropped |
+| `RAG_CHAT_HISTORY_K` | `3` | Past exchanges injected into the prompt |
+| `DOCUMENT_URL_EXPIRE_SECONDS` | `900` | Lifetime of download URLs |
 
 RAGAS evaluation measures context precision, context recall, faithfulness, and answer relevancy — separately for retrieval-only and end-to-end pipeline.
 

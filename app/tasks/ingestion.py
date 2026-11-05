@@ -22,14 +22,32 @@ def _estimate_tokens(text: str) -> float:
     return len(text) / CHARS_PER_TOKEN
 
 
+def _extract_texts(elements: list | None) -> list[str]:
+    """Usable chunk texts, in order; empty and blank elements are dropped."""
+    texts: list[str] = []
+    for element in elements or []:
+        text = (element or {}).get("text")
+        if isinstance(text, str) and text.strip():
+            texts.append(text)
+    return texts
+
+
 async def _build_points(
     texts: list[str],
     dense_vecs: list[list[float]],
     payload_base: dict
 ) -> list[PointStruct]:
     sparse_vecs = await sparse_embedder.embed_documents(texts)
+    # ``zip`` truncates to the shortest input, so a provider that returned fewer
+    # vectors than chunks dropped the remaining chunks without a word and marked
+    # the document COMPLETED.
+    if not (len(texts) == len(dense_vecs) == len(sparse_vecs)):
+        raise ValueError(
+            "embedding count mismatch: "
+            f"{len(texts)} chunks, {len(dense_vecs)} dense vectors, {len(sparse_vecs)} sparse vectors"
+        )
     points = []
-    for text, dense, sparse in zip(texts, dense_vecs, sparse_vecs):
+    for text, dense, sparse in zip(texts, dense_vecs, sparse_vecs, strict=True):
         points.append(PointStruct(
             id=str(uuid.uuid4()),
             vector={
@@ -58,7 +76,7 @@ async def process_document_pipeline(doc_id: str, s3_key: str):
             content = await s3_service.get_file_content(s3_key)
             elements = await unstructured_service.partition_file_content(content, doc.filename) or []
 
-            texts = [el["text"] for el in elements if "text" in el]
+            texts = _extract_texts(elements)
 
             if not texts:
                 log.warning("no_content_extracted", doc_id=doc_id)
@@ -108,7 +126,7 @@ async def process_inline_paste_pipeline(doc_id: str, text_content: str):
                 text_content.encode("utf-8"), doc.filename, use_hi_res=False
             ) or []
 
-            texts = [el["text"] for el in elements if "text" in el]
+            texts = _extract_texts(elements)
 
             if not texts:
                 log.warning("no_content_extracted_from_paste", doc_id=doc_id)
@@ -196,7 +214,7 @@ async def push_chat_history_to_qdrant(chat_id: str):
 
             points = []
             for text, dense, sparse_vec, msg_ids, (user_msg, _) in zip(
-                pair_texts, dense_vecs, sparse_vecs, pair_message_ids, pairs
+                pair_texts, dense_vecs, sparse_vecs, pair_message_ids, pairs, strict=True
             ):
                 points.append(PointStruct(
                     id=str(uuid.uuid4()),

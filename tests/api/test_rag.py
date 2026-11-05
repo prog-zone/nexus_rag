@@ -422,3 +422,330 @@ async def test_get_chat_messages(logged_in_client):
     assert "chat" in data
     assert "messages" in data
     assert isinstance(data["messages"], list)
+
+# --------------------------------------------------------------------------- #
+# Deletion must reach the vector store and the object store
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_delete_document_awaits_vector_deletion(logged_in_client):
+    """The vector delete is a coroutine and must be awaited, not threaded.
+
+    ``asyncio.to_thread(qdrant_service.delete_by_doc_id, ...)`` only scheduled the
+    thread and dropped the coroutine it produced, so the vectors survived the
+    deletion while the endpoint returned 204.
+    """
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Await Case"})
+    case_id = create.json()["id"]
+
+    with patch("app.api.rag.s3_service.upload_file", new_callable=AsyncMock), \
+         patch("app.api.rag.process_document_pipeline.kiq", new_callable=AsyncMock):
+        upload = await logged_in_client.post(
+            f"/api/v1/rag/cases/{case_id}/documents",
+            files={"file": ("test.pdf", io.BytesIO(b"content"), "application/pdf")}
+        )
+    doc_id = upload.json()["document_id"]
+
+    with patch("app.api.rag.s3_service.delete_file", new_callable=AsyncMock), \
+         patch("app.api.rag.qdrant_service.delete_by_doc_id", new_callable=AsyncMock) as mock_qdrant:
+        response = await logged_in_client.delete(f"/api/v1/rag/cases/{case_id}/documents/{doc_id}")
+
+    assert response.status_code == 204
+    mock_qdrant.assert_awaited_once_with(doc_id)
+
+
+@pytest.mark.asyncio
+async def test_delete_case_purges_vectors_and_stored_objects(logged_in_client):
+    """Deleting a case must not leave its contract text searchable."""
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Purge Case"})
+    case_id = create.json()["id"]
+
+    with patch("app.api.rag.s3_service.upload_file", new_callable=AsyncMock), \
+         patch("app.api.rag.process_document_pipeline.kiq", new_callable=AsyncMock) as mock_pipeline:
+        for name in ("first.pdf", "second.pdf"):
+            await logged_in_client.post(
+                f"/api/v1/rag/cases/{case_id}/documents",
+                files={"file": (name, io.BytesIO(b"content"), "application/pdf")}
+            )
+    s3_keys = [call.kwargs["s3_key"] for call in mock_pipeline.call_args_list]
+
+    with patch("app.api.rag.s3_service.delete_file", new_callable=AsyncMock) as mock_s3, \
+         patch("app.api.rag.qdrant_service.delete_by_case_id", new_callable=AsyncMock) as mock_qdrant:
+        response = await logged_in_client.delete(f"/api/v1/rag/cases/{case_id}")
+
+    assert response.status_code == 204
+    mock_qdrant.assert_awaited_once_with(case_id)
+    deleted_keys = [call.args[0] for call in mock_s3.await_args_list]
+    assert sorted(deleted_keys) == sorted(s3_keys)
+    assert len(deleted_keys) == 2
+
+    assert (await logged_in_client.get(f"/api/v1/rag/cases/{case_id}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_case_removes_the_real_vectors(logged_in_client, in_memory_qdrant):
+    """End-to-end against a real (in-process) Qdrant: the chunks are gone."""
+    from qdrant_client import models
+    from app.services.qdrant import qdrant_service
+
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Real Purge Case"})
+    case_id = create.json()["id"]
+
+    qdrant_service.dense_dim = 4
+    await qdrant_service.ensure_collections()
+    await qdrant_service.upsert_documents([
+        models.PointStruct(
+            id="11111111-1111-1111-1111-111111111111",
+            vector={"dense": [1.0, 0.0, 0.0, 0.0],
+                    "sparse": models.SparseVector(indices=[0], values=[1.0])},
+            payload={"text": "indemnity", "doc_name": "acme.pdf", "doc_id": "d1",
+                     "case_id": case_id, "user_id": "u1", "source": "document"},
+        )
+    ])
+    assert await qdrant_service.count_points(qdrant_service.documents_collection, case_id) == 1
+
+    with patch("app.api.rag.s3_service.delete_file", new_callable=AsyncMock):
+        response = await logged_in_client.delete(f"/api/v1/rag/cases/{case_id}")
+
+    assert response.status_code == 204
+    assert await qdrant_service.count_points(qdrant_service.documents_collection, case_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_document_survives_a_storage_failure(logged_in_client):
+    """A failing object delete must not leave the row and its vectors behind."""
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Storage Failure Case"})
+    case_id = create.json()["id"]
+
+    with patch("app.api.rag.s3_service.upload_file", new_callable=AsyncMock), \
+         patch("app.api.rag.process_document_pipeline.kiq", new_callable=AsyncMock):
+        upload = await logged_in_client.post(
+            f"/api/v1/rag/cases/{case_id}/documents",
+            files={"file": ("test.pdf", io.BytesIO(b"content"), "application/pdf")}
+        )
+    doc_id = upload.json()["document_id"]
+
+    with patch("app.api.rag.s3_service.delete_file", new_callable=AsyncMock,
+               side_effect=RuntimeError("bucket unavailable")), \
+         patch("app.api.rag.qdrant_service.delete_by_doc_id", new_callable=AsyncMock) as mock_qdrant:
+        response = await logged_in_client.delete(f"/api/v1/rag/cases/{case_id}/documents/{doc_id}")
+
+    assert response.status_code == 204
+    mock_qdrant.assert_awaited_once_with(doc_id)
+    assert (await logged_in_client.get(
+        f"/api/v1/rag/cases/{case_id}/documents/{doc_id}"
+    )).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_chat_awaits_vector_deletion(logged_in_client):
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Await Chat Case"})
+    case_id = create.json()["id"]
+    chat = await logged_in_client.post(f"/api/v1/rag/cases/{case_id}/chats", json={"title": "Chat"})
+    chat_id = chat.json()["id"]
+
+    with patch("app.api.rag.qdrant_service.delete_by_chat_id", new_callable=AsyncMock) as mock_qdrant:
+        response = await logged_in_client.delete(f"/api/v1/rag/cases/{case_id}/chats/{chat_id}")
+
+    assert response.status_code == 204
+    mock_qdrant.assert_awaited_once_with(chat_id)
+
+
+# --------------------------------------------------------------------------- #
+# Downloading the original file
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_download_document_returns_a_presigned_url(logged_in_client):
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Download Case"})
+    case_id = create.json()["id"]
+
+    with patch("app.api.rag.s3_service.upload_file", new_callable=AsyncMock), \
+         patch("app.api.rag.process_document_pipeline.kiq", new_callable=AsyncMock):
+        upload = await logged_in_client.post(
+            f"/api/v1/rag/cases/{case_id}/documents",
+            files={"file": ("contract.pdf", io.BytesIO(b"content"), "application/pdf")}
+        )
+    doc_id = upload.json()["document_id"]
+
+    with patch("app.api.rag.s3_service.get_presigned_url", new_callable=AsyncMock,
+               return_value="https://minio.local/contract.pdf?sig=abc") as mock_url:
+        response = await logged_in_client.get(
+            f"/api/v1/rag/cases/{case_id}/documents/{doc_id}/download"
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["url"] == "https://minio.local/contract.pdf?sig=abc"
+    assert body["filename"] == "contract.pdf"
+    assert body["document_id"] == doc_id
+    assert body["expires_in"] > 0
+    mock_url.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_download_document_not_found(logged_in_client):
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "No Doc Download Case"})
+    case_id = create.json()["id"]
+
+    response = await logged_in_client.get(
+        f"/api/v1/rag/cases/{case_id}/documents/00000000-0000-0000-0000-000000000000/download"
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_inline_paste_is_rejected(logged_in_client):
+    """Pasted text has no object behind it, so there is nothing to sign."""
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Paste Download Case"})
+    case_id = create.json()["id"]
+    chat = await logged_in_client.post(f"/api/v1/rag/cases/{case_id}/chats", json={"title": "Chat"})
+    chat_id = chat.json()["id"]
+
+    retrieval_result = {
+        "document_chunks": [],
+        "chat_history_chunks": [],
+        "has_relevant_context": False,
+        "query_type": "new_question",
+        "exact_entity": None,
+        "doc_hint": None,
+        "sub_queries": ["query"],
+    }
+
+    with patch("app.api.rag.retrieval_service.retrieve", new_callable=AsyncMock,
+               return_value=retrieval_result), \
+         patch("app.api.rag.retrieval_service.build_context_prompt", return_value=""), \
+         patch("app.api.rag.should_push_chat_history", new_callable=AsyncMock, return_value=False), \
+         patch("app.api.rag.process_inline_paste_pipeline.kiq", new_callable=AsyncMock):
+        await logged_in_client.post(
+            f"/api/v1/rag/cases/{case_id}/chats/{chat_id}/message",
+            json={"content": "Summarise this", "pasted_text": "Clause 1: ..."}
+        )
+
+    history = await logged_in_client.get(
+        f"/api/v1/rag/cases/{case_id}/chats/{chat_id}/messages"
+    )
+    attachment_ids = [
+        message["attachment_doc_id"]
+        for message in history.json()["messages"]
+        if message["attachment_doc_id"]
+    ]
+    assert attachment_ids
+
+    response = await logged_in_client.get(
+        f"/api/v1/rag/cases/{case_id}/documents/{attachment_ids[0]}/download"
+    )
+
+    assert response.status_code == 400
+    assert "pasted" in response.json()["detail"].lower()
+
+
+# --------------------------------------------------------------------------- #
+# Uploads and message ordering
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_upload_without_an_extension_gets_a_safe_suffix(logged_in_client):
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Extension Case"})
+    case_id = create.json()["id"]
+
+    with patch("app.api.rag.s3_service.upload_file", new_callable=AsyncMock) as mock_upload, \
+         patch("app.api.rag.process_document_pipeline.kiq", new_callable=AsyncMock):
+        response = await logged_in_client.post(
+            f"/api/v1/rag/cases/{case_id}/documents",
+            files={"file": ("README", io.BytesIO(b"content"), "text/plain")}
+        )
+
+    assert response.status_code == 201
+    s3_key = mock_upload.await_args.args[1]
+    assert s3_key.endswith(".bin")
+
+
+@pytest.mark.asyncio
+async def test_message_sequence_indexes_stay_contiguous(logged_in_client):
+    """Four stored messages get indexes 0..3 and the counter agrees."""
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Sequence Case"})
+    case_id = create.json()["id"]
+    chat = await logged_in_client.post(f"/api/v1/rag/cases/{case_id}/chats", json={"title": "Chat"})
+    chat_id = chat.json()["id"]
+
+    retrieval_result = {
+        "document_chunks": [],
+        "chat_history_chunks": [],
+        "has_relevant_context": False,
+        "query_type": "new_question",
+        "exact_entity": None,
+        "doc_hint": None,
+        "sub_queries": ["query"],
+    }
+
+    with patch("app.api.rag.retrieval_service.retrieve", new_callable=AsyncMock,
+               return_value=retrieval_result), \
+         patch("app.api.rag.retrieval_service.build_context_prompt", return_value=""), \
+         patch("app.api.rag.should_push_chat_history", new_callable=AsyncMock, return_value=False):
+        for question in ("First question?", "Second question?"):
+            response = await logged_in_client.post(
+                f"/api/v1/rag/cases/{case_id}/chats/{chat_id}/message",
+                json={"content": question}
+            )
+            assert response.status_code == 200
+
+    history = await logged_in_client.get(
+        f"/api/v1/rag/cases/{case_id}/chats/{chat_id}/messages"
+    )
+    body = history.json()
+    assert [message["sequence_index"] for message in body["messages"]] == [0, 1, 2, 3]
+    assert body["chat"]["message_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_sequence_stays_contiguous_when_a_stream_dies(logged_in_client):
+    """A turn that never produced an answer must not burn a sequence index."""
+    create = await logged_in_client.post("/api/v1/rag/cases", json={"title": "Broken Stream Case"})
+    case_id = create.json()["id"]
+    chat = await logged_in_client.post(f"/api/v1/rag/cases/{case_id}/chats", json={"title": "Chat"})
+    chat_id = chat.json()["id"]
+
+    retrieval_result = {
+        "document_chunks": [],
+        "chat_history_chunks": [],
+        "has_relevant_context": False,
+        "query_type": "new_question",
+        "exact_entity": None,
+        "doc_hint": None,
+        "sub_queries": ["query"],
+    }
+
+    async def empty_stream(*args, **kwargs):
+        if False:  # pragma: no cover - an async generator that yields nothing
+            yield ""
+
+    with patch("app.api.rag.retrieval_service.retrieve", new_callable=AsyncMock,
+               return_value=retrieval_result), \
+         patch("app.api.rag.retrieval_service.build_context_prompt", return_value=""), \
+         patch("app.api.rag.should_push_chat_history", new_callable=AsyncMock, return_value=False), \
+         patch("app.api.rag.llm_service.stream_response", side_effect=empty_stream):
+        first = await logged_in_client.post(
+            f"/api/v1/rag/cases/{case_id}/chats/{chat_id}/message",
+            json={"content": "First question?"}
+        )
+    assert first.status_code == 200
+
+    with patch("app.api.rag.retrieval_service.retrieve", new_callable=AsyncMock,
+               return_value=retrieval_result), \
+         patch("app.api.rag.retrieval_service.build_context_prompt", return_value=""), \
+         patch("app.api.rag.should_push_chat_history", new_callable=AsyncMock, return_value=False):
+        second = await logged_in_client.post(
+            f"/api/v1/rag/cases/{case_id}/chats/{chat_id}/message",
+            json={"content": "Second question?"}
+        )
+    assert second.status_code == 200
+
+    history = await logged_in_client.get(
+        f"/api/v1/rag/cases/{case_id}/chats/{chat_id}/messages"
+    )
+    body = history.json()
+    # user(0), user(1), assistant(2): the dead turn left no index behind.
+    assert [message["sequence_index"] for message in body["messages"]] == [0, 1, 2]
+    assert body["chat"]["message_count"] == 3

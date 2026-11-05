@@ -1,9 +1,8 @@
-import uuid
 import json
+from functools import cached_property
 from typing import AsyncGenerator
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.logger import log
@@ -22,14 +21,26 @@ SYSTEM_PROMPT = """You are Nexus, a precise legal AI assistant. You help lawyers
 
 class LLMService:
     def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         self.model = settings.OPENAI_CHAT_MODEL
+
+    @cached_property
+    def client(self) -> AsyncOpenAI:
+        """Create the OpenAI client on first use.
+
+        The module-level instance used to build it at import time, which made
+        ``import app.main`` fail whenever ``OPENAI_API_KEY`` was unset (tests,
+        health checks, the worker).
+        """
+        if not settings.OPENAI_API_KEY:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
     def _build_messages(
         self,
         context_prompt: str,
         recent_messages: list[ChatMessage],
-        user_query: str
+        user_query: str,
+        current_message_id=None
     ) -> list[dict]:
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -42,6 +53,11 @@ class LLMService:
 
         for msg in recent_messages:
             if msg.role == MessageRole.SYSTEM:
+                continue
+            # The message being answered is already committed by the time history is
+            # read, so it would otherwise be sent twice: once from history and once
+            # as the trailing user turn.
+            if current_message_id is not None and msg.id == current_message_id:
                 continue
             messages.append({
                 "role": msg.role.value,
@@ -84,7 +100,8 @@ class LLMService:
             messages = self._build_messages(
                 context_prompt=context_prompt,
                 recent_messages=recent_messages,
-                user_query=query
+                user_query=query,
+                current_message_id=user_message.id
             )
 
             log.info(
@@ -133,16 +150,21 @@ class LLMService:
         db: AsyncSession
     ):
         try:
+            next_index = user_message.sequence_index + 1
             assistant_msg = ChatMessage(
                 chat_id=chat.id,
                 role=MessageRole.ASSISTANT,
                 content=content,
-                sequence_index=user_message.sequence_index + 1,
+                sequence_index=next_index,
                 is_in_qdrant=False,
                 has_attachment=False
             )
             db.add(assistant_msg)
-            chat.message_count += 2
+            # Count the messages that actually exist. The previous unconditional
+            # ``+= 2`` left the counter ahead of the table whenever a stream died
+            # before the assistant turn was persisted, and the next user message
+            # then reused a sequence_index.
+            chat.message_count = max(chat.message_count, next_index + 1)
             await db.commit()
 
             log.info("assistant_message_saved", chat_id=str(chat.id))

@@ -47,6 +47,13 @@ class DocumentStatusSchema(BaseModel):
         return cls(document_id=doc.id, status=doc.status)
 
 
+class DocumentDownloadSchema(BaseModel):
+    document_id: uuid.UUID
+    filename: str
+    url: str
+    expires_in: int
+
+
 class CreateChatSchema(BaseModel):
     title: str = Field(default="New Chat", min_length=1, max_length=200)
 

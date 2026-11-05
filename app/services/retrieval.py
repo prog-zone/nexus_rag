@@ -1,5 +1,6 @@
 import json
 import asyncio
+from functools import cached_property
 from openai import AsyncOpenAI
 from app.core.logger import log
 from app.core.config import settings
@@ -9,16 +10,17 @@ from app.services.sparse import sparse_embedder
 from app.services.reranker import reranker_service
 
 
-RELEVANCE_THRESHOLD = 0.3
-QDRANT_FETCH_K = 15
-PRE_FILTER_K = 8
-RERANK_TOP_K = 3
-
-
 class RetrievalService:
 
     def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        self.max_sub_queries = 3
+
+    @cached_property
+    def client(self) -> AsyncOpenAI:
+        """Create the OpenAI client on first use; imports must not need a key."""
+        if not settings.OPENAI_API_KEY:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
     async def _understand_query(self, query: str, recent_messages: list) -> dict:
         history_text = ""
@@ -61,6 +63,8 @@ class RetrievalService:
             )
             text = response.choices[0].message.content or ""
             result = json.loads(text)
+            if not isinstance(result, dict):
+                raise ValueError(f"query understanding returned {type(result).__name__}, not an object")
             log.info(
                 "query_understood",
                 query_type=result.get("query_type"),
@@ -78,6 +82,41 @@ class RetrievalService:
                 "sub_queries": [query]
             }
 
+    @staticmethod
+    def _sub_queries_from(understood: dict, fallback_query: str) -> list[str]:
+        """Normalise the LLM's sub-query list.
+
+        The model occasionally answers with a bare string (which used to be
+        iterated character by character, turning one question into eight
+        one-letter searches) or with an empty list (which used to skip searching
+        entirely and answer "not found in the case documents").
+        """
+        raw = understood.get("sub_queries") if isinstance(understood, dict) else None
+        candidates: list[str] = []
+        if isinstance(raw, str):
+            candidates = [raw]
+        elif isinstance(raw, (list, tuple)):
+            candidates = [item for item in raw if isinstance(item, str)]
+
+        cleaned: list[str] = []
+        for candidate in candidates:
+            text = " ".join(candidate.split())
+            if text and text not in cleaned:
+                cleaned.append(text)
+        return cleaned[:3] or [fallback_query]
+
+    @staticmethod
+    def _dedupe_by_text(results: list[dict]) -> list[dict]:
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for result in results:
+            text = result.get("text", "")
+            if not text.strip() or text in seen:
+                continue
+            seen.add(text)
+            unique.append(result)
+        return unique
+
     async def retrieve(
         self,
         query: str,
@@ -90,12 +129,14 @@ class RetrievalService:
             recent_messages = []
 
         understood = await self._understand_query(query, recent_messages)
-        sub_queries = understood.get("sub_queries", [query])
-        doc_hint = understood.get("doc_hint")
+        sub_queries = self._sub_queries_from(understood, query)
+        doc_hint = understood.get("doc_hint") if isinstance(understood, dict) else None
+        if isinstance(doc_hint, str) and not doc_hint.strip():
+            doc_hint = None
 
-        all_doc_results = []
-        all_paste_results = []
-        all_history_results = []
+        all_doc_results: list[dict] = []
+        all_paste_results: list[dict] = []
+        all_history_results: list[dict] = []
 
         for sub_query in sub_queries:
             dense_vector = await embedding_service.generate_query_embedding(sub_query)
@@ -111,33 +152,42 @@ class RetrievalService:
             all_paste_results.extend(paste_results)
             all_history_results.extend(history_results)
 
-        seen = set()
-        unique_doc_results = []
-        for r in all_doc_results:
-            if r["text"] not in seen:
-                seen.add(r["text"])
-                unique_doc_results.append(r)
+        unique_doc_results = self._dedupe_by_text(all_doc_results)
+        unique_paste_results = self._dedupe_by_text(all_paste_results)
+
+        # Rank across sub-queries before slicing: sub-query order used to decide
+        # which past exchanges reached the prompt, so a weak first sub-query could
+        # push a strong hit out of the context window.
+        history_ranked = sorted(
+            self._dedupe_by_text(all_history_results),
+            key=lambda chunk: chunk.get("score", 0.0),
+            reverse=True,
+        )[: settings.RAG_CHAT_HISTORY_K]
 
         log.info(
             "retrieval_raw_results",
             sub_queries=len(sub_queries),
             doc_hint=doc_hint,
             docs=len(unique_doc_results),
-            pastes=len(all_paste_results),
-            history=len(all_history_results)
+            pastes=len(unique_paste_results),
+            history=len(history_ranked)
         )
 
-        chunks_to_rerank = unique_doc_results + all_paste_results
+        chunks_to_rerank = unique_doc_results + unique_paste_results
         reranked_chunks = []
 
         if chunks_to_rerank:
             chunks_to_rerank.sort(key=lambda c: c["score"], reverse=True)
-            chunks_to_rerank = chunks_to_rerank[:PRE_FILTER_K]
+            chunks_to_rerank = chunks_to_rerank[: settings.RAG_PRE_FILTER_K]
 
-            log.info("pre_filter_applied", before=len(unique_doc_results + all_paste_results), after=len(chunks_to_rerank))
+            log.info("pre_filter_applied", before=len(unique_doc_results + unique_paste_results), after=len(chunks_to_rerank))
 
             texts = [c["text"] for c in chunks_to_rerank]
-            reranked = await reranker_service.rerank(query=query, documents=texts, top_k=RERANK_TOP_K)
+            reranked = await reranker_service.rerank(
+                query=query,
+                documents=texts,
+                top_k=settings.RAG_RERANK_TOP_K,
+            )
 
             reranked_chunks = [
                 {
@@ -148,14 +198,14 @@ class RetrievalService:
                     "doc_id": chunks_to_rerank[r["index"]].get("doc_id", ""),
                 }
                 for r in reranked
-                if r["score"] >= RELEVANCE_THRESHOLD
+                if r["score"] >= settings.RAG_RELEVANCE_THRESHOLD
             ]
 
             log.info("reranking_complete", final_chunks=len(reranked_chunks))
 
         return {
             "document_chunks": reranked_chunks,
-            "chat_history_chunks": all_history_results[:3],
+            "chat_history_chunks": history_ranked,
             "has_relevant_context": len(reranked_chunks) > 0,
             "query_type": understood.get("query_type", "new_question"),
             "exact_entity": understood.get("exact_entity"),
@@ -174,7 +224,7 @@ class RetrievalService:
         try:
             results = await qdrant_service.search_documents(
                 dense_vector, sparse_vector, case_id, user_id,
-                top_k=QDRANT_FETCH_K, doc_hint=doc_hint
+                top_k=settings.RAG_QDRANT_FETCH_K, doc_hint=doc_hint
             )
             return [
                 {

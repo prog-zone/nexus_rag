@@ -1,5 +1,5 @@
 import uuid
-import asyncio
+import pathlib
 from typing import Annotated
 from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, UploadFile, Depends, HTTPException, status
@@ -18,9 +18,9 @@ from app.models.user import User
 from app.models.rag import Case, Chat, ChatMessage, Document, DocumentStatus, DocumentSource, CaseStatus, MessageRole
 from app.schemas.rag import (
     CreateCaseSchema, UpdateCaseSchema, CaseSchema,
-    DocumentSchema, DocumentStatusSchema,
+    DocumentSchema, DocumentStatusSchema, DocumentDownloadSchema,
     CreateChatSchema, UpdateChatSchema, ChatSchema,
-    SendMessageSchema, ChatMessageSchema, ChatHistorySchema
+    SendMessageSchema, ChatHistorySchema
 )
 from app.tasks.ingestion import process_document_pipeline, process_inline_paste_pipeline, push_chat_history_to_qdrant, should_push_chat_history
 
@@ -30,6 +30,91 @@ AsyncDbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 RECENT_PAIRS_MIN = 5
+UNKNOWN_FILE_EXTENSION = "bin"
+
+
+async def _get_case_or_404(case_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> Case:
+    result = await db.execute(
+        select(Case).where(Case.id == case_id, Case.user_id == user_id)
+    )
+    case = result.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    return case
+
+
+async def _get_chat_or_404(
+    case_id: uuid.UUID, chat_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession
+) -> Chat:
+    result = await db.execute(
+        select(Chat).where(
+            Chat.id == chat_id,
+            Chat.case_id == case_id,
+            Chat.user_id == user_id
+        )
+    )
+    chat = result.scalar_one_or_none()
+    if not chat:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    return chat
+
+
+async def _get_document_or_404(
+    case_id: uuid.UUID, doc_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession
+) -> Document:
+    result = await db.execute(
+        select(Document).where(
+            Document.id == doc_id,
+            Document.case_id == case_id,
+            Document.user_id == user_id
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return doc
+
+
+def _stored_objects(documents: list[Document]) -> list[str]:
+    """S3 keys of the documents that actually have an object behind them."""
+    return [
+        doc.s3_key
+        for doc in documents
+        if doc.source == DocumentSource.UPLOAD and doc.s3_key
+    ]
+
+
+async def _purge_document_assets(doc: Document) -> None:
+    """Remove the bytes and the vectors of a document, best effort.
+
+    Failures are logged instead of raised: a single unreachable storage or vector
+    backend must not stop the caller from finishing the rest of the deletion.
+    """
+    if doc.source == DocumentSource.UPLOAD and doc.s3_key:
+        try:
+            await s3_service.delete_file(doc.s3_key)
+        except Exception:
+            log.exception("document_object_purge_failed", doc_id=str(doc.id), s3_key=doc.s3_key)
+
+    try:
+        await qdrant_service.delete_by_doc_id(str(doc.id))
+    except Exception:
+        log.exception("document_vectors_purge_failed", doc_id=str(doc.id))
+
+
+async def _purge_case_assets(case_id: uuid.UUID, documents: list[Document]) -> None:
+    """Remove every stored object and every vector that belongs to a case."""
+    for s3_key in _stored_objects(documents):
+        try:
+            await s3_service.delete_file(s3_key)
+        except Exception:
+            log.exception("case_object_purge_failed", case_id=str(case_id), s3_key=s3_key)
+
+    try:
+        await qdrant_service.delete_by_case_id(str(case_id))
+    except Exception:
+        log.exception("case_vectors_purge_failed", case_id=str(case_id))
+
 
 async def _get_recent_messages(chat_id: uuid.UUID, db: AsyncSession) -> list[ChatMessage]:
     unchecked_result = await db.execute(
@@ -50,7 +135,7 @@ async def _get_recent_messages(chat_id: uuid.UUID, db: AsyncSession) -> list[Cha
 
     if unchecked_pairs >= RECENT_PAIRS_MIN:
         return list(unchecked)
-    
+
     checked_result = await db.execute(
         select(ChatMessage)
         .where(
@@ -100,13 +185,7 @@ async def list_cases(current_user: CurrentUser, db: AsyncDbSession):
 
 @router.get("/cases/{case_id}", response_model=CaseSchema)
 async def get_case(case_id: uuid.UUID, current_user: CurrentUser, db: AsyncDbSession):
-    result = await db.execute(
-        select(Case).where(Case.id == case_id, Case.user_id == current_user.id)
-    )
-    case = result.scalar_one_or_none()
-    if not case:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
-    return case
+    return await _get_case_or_404(case_id, current_user.id, db)
 
 
 @router.patch("/cases/{case_id}", response_model=CaseSchema)
@@ -116,12 +195,7 @@ async def update_case(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Case).where(Case.id == case_id, Case.user_id == current_user.id)
-    )
-    case = result.scalar_one_or_none()
-    if not case:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    case = await _get_case_or_404(case_id, current_user.id, db)
 
     if body.title is not None:
         case.title = body.title
@@ -138,15 +212,27 @@ async def update_case(
 
 @router.delete("/cases/{case_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_case(case_id: uuid.UUID, current_user: CurrentUser, db: AsyncDbSession):
-    result = await db.execute(
-        select(Case).where(Case.id == case_id, Case.user_id == current_user.id)
+    case = await _get_case_or_404(case_id, current_user.id, db)
+
+    documents_result = await db.execute(
+        select(Document).where(Document.case_id == case_id)
     )
-    case = result.scalar_one_or_none()
-    if not case:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    documents = list(documents_result.scalars().all())
+
+    # Purging the stored objects and the vectors before the row disappears: the
+    # cascade only reaches PostgreSQL, so deleting the case alone left every
+    # uploaded contract and its chunks behind, still retrievable by queries that
+    # only filter on case_id/user_id.
+    await _purge_case_assets(case_id, documents)
+
     await db.delete(case)
     await db.commit()
-    log.info("case_deleted", case_id=str(case_id), user_id=str(current_user.id))
+    log.info(
+        "case_deleted",
+        case_id=str(case_id),
+        user_id=str(current_user.id),
+        documents=len(documents)
+    )
 
 
 @router.post("/cases/{case_id}/documents", response_model=DocumentStatusSchema, status_code=status.HTTP_201_CREATED)
@@ -156,11 +242,7 @@ async def upload_document(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Case).where(Case.id == case_id, Case.user_id == current_user.id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    await _get_case_or_404(case_id, current_user.id, db)
 
     doc_count_result = await db.execute(
         select(func.count()).where(
@@ -181,7 +263,7 @@ async def upload_document(
         )
 
     filename = file.filename or "unknown"
-    file_ext = filename.split(".")[-1]
+    file_ext = pathlib.PurePath(filename).suffix.lstrip(".").lower() or UNKNOWN_FILE_EXTENSION
     s3_key = f"uploads/{current_user.id}/{case_id}/{uuid.uuid4()}.{file_ext}"
 
     await s3_service.upload_file(file, s3_key)
@@ -206,11 +288,7 @@ async def upload_document(
 
 @router.get("/cases/{case_id}/documents", response_model=list[DocumentSchema])
 async def list_documents(case_id: uuid.UUID, current_user: CurrentUser, db: AsyncDbSession):
-    result = await db.execute(
-        select(Case).where(Case.id == case_id, Case.user_id == current_user.id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    await _get_case_or_404(case_id, current_user.id, db)
 
     result = await db.execute(
         select(Document).where(
@@ -228,17 +306,37 @@ async def get_document(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Document).where(
-            Document.id == doc_id,
-            Document.case_id == case_id,
-            Document.user_id == current_user.id
+    return await _get_document_or_404(case_id, doc_id, current_user.id, db)
+
+
+@router.get("/cases/{case_id}/documents/{doc_id}/download", response_model=DocumentDownloadSchema)
+async def download_document(
+    case_id: uuid.UUID,
+    doc_id: uuid.UUID,
+    current_user: CurrentUser,
+    db: AsyncDbSession
+):
+    """Short-lived pre-signed URL for the original file.
+
+    Uploads were write-only from the API's point of view: the lawyer could add a
+    contract and never fetch it back through the product.
+    """
+    doc = await _get_document_or_404(case_id, doc_id, current_user.id, db)
+
+    if doc.source != DocumentSource.UPLOAD or not doc.s3_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This document was pasted into a chat and has no stored file."
         )
+
+    url = await s3_service.get_presigned_url(doc.s3_key, expiration=settings.DOCUMENT_URL_EXPIRE_SECONDS)
+    log.info("document_download_url_issued", doc_id=str(doc_id), case_id=str(case_id))
+    return DocumentDownloadSchema(
+        document_id=doc.id,
+        filename=doc.filename,
+        url=url,
+        expires_in=settings.DOCUMENT_URL_EXPIRE_SECONDS
     )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    return doc
 
 
 @router.delete("/cases/{case_id}/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -248,21 +346,12 @@ async def delete_document(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Document).where(
-            Document.id == doc_id,
-            Document.case_id == case_id,
-            Document.user_id == current_user.id
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    
-    if doc.s3_key:
-        await s3_service.delete_file(doc.s3_key)
-    
-    await asyncio.to_thread(qdrant_service.delete_by_doc_id, str(doc_id))
+    doc = await _get_document_or_404(case_id, doc_id, current_user.id, db)
+
+    # ``delete_by_doc_id`` is a coroutine: handing it to ``asyncio.to_thread``
+    # returned a coroutine object that nothing awaited, so the vectors were never
+    # deleted and the "deleted" document kept answering later questions.
+    await _purge_document_assets(doc)
 
     await db.delete(doc)
     await db.commit()
@@ -276,11 +365,7 @@ async def create_chat(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Case).where(Case.id == case_id, Case.user_id == current_user.id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    await _get_case_or_404(case_id, current_user.id, db)
 
     new_chat = Chat(
         user_id=current_user.id,
@@ -297,11 +382,7 @@ async def create_chat(
 
 @router.get("/cases/{case_id}/chats", response_model=list[ChatSchema])
 async def list_chats(case_id: uuid.UUID, current_user: CurrentUser, db: AsyncDbSession):
-    result = await db.execute(
-        select(Case).where(Case.id == case_id, Case.user_id == current_user.id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    await _get_case_or_404(case_id, current_user.id, db)
 
     result = await db.execute(
         select(Chat)
@@ -318,17 +399,7 @@ async def get_chat(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Chat).where(
-            Chat.id == chat_id,
-            Chat.case_id == case_id,
-            Chat.user_id == current_user.id
-        )
-    )
-    chat = result.scalar_one_or_none()
-    if not chat:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
-    return chat
+    return await _get_chat_or_404(case_id, chat_id, current_user.id, db)
 
 
 @router.patch("/cases/{case_id}/chats/{chat_id}", response_model=ChatSchema)
@@ -339,16 +410,7 @@ async def update_chat(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Chat).where(
-            Chat.id == chat_id,
-            Chat.case_id == case_id,
-            Chat.user_id == current_user.id
-        )
-    )
-    chat = result.scalar_one_or_none()
-    if not chat:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    chat = await _get_chat_or_404(case_id, chat_id, current_user.id, db)
 
     chat.title = body.title
     await db.commit()
@@ -364,18 +426,13 @@ async def delete_chat(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Chat).where(
-            Chat.id == chat_id,
-            Chat.case_id == case_id,
-            Chat.user_id == current_user.id
-        )
-    )
-    chat = result.scalar_one_or_none()
-    if not chat:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
-    
-    await asyncio.to_thread(qdrant_service.delete_by_chat_id, str(chat_id))
+    chat = await _get_chat_or_404(case_id, chat_id, current_user.id, db)
+
+    try:
+        await qdrant_service.delete_by_chat_id(str(chat_id))
+    except Exception:
+        log.exception("chat_vectors_purge_failed", chat_id=str(chat_id))
+
     await db.delete(chat)
     await db.commit()
     log.info("chat_deleted", chat_id=str(chat_id), case_id=str(case_id))
@@ -388,16 +445,7 @@ async def get_chat_messages(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Chat).where(
-            Chat.id == chat_id,
-            Chat.case_id == case_id,
-            Chat.user_id == current_user.id
-        )
-    )
-    chat = result.scalar_one_or_none()
-    if not chat:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    chat = await _get_chat_or_404(case_id, chat_id, current_user.id, db)
 
     result = await db.execute(
         select(ChatMessage)
@@ -416,16 +464,7 @@ async def send_message(
     current_user: CurrentUser,
     db: AsyncDbSession
 ):
-    result = await db.execute(
-        select(Chat).where(
-            Chat.id == chat_id,
-            Chat.case_id == case_id,
-            Chat.user_id == current_user.id
-        )
-    )
-    chat = result.scalar_one_or_none()
-    if not chat:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    chat = await _get_chat_or_404(case_id, chat_id, current_user.id, db)
 
     user_message = ChatMessage(
         chat_id=chat_id,
@@ -436,6 +475,9 @@ async def send_message(
         has_attachment=False
     )
     db.add(user_message)
+    # Keep the counter in step with the rows that exist, rather than with the
+    # number of turns that were *supposed* to be written.
+    chat.message_count = user_message.sequence_index + 1
     await db.commit()
     await db.refresh(user_message)
 

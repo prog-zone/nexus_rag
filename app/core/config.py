@@ -2,7 +2,7 @@ from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = ""
+    PROJECT_NAME: str = "Nexus RAG"
     
     # CORS Configuration
     BACKEND_CORS_ORIGINS: List[str] = []
@@ -50,6 +50,21 @@ class Settings(BaseSettings):
     # Document Upload Limit Setting
     MAX_DOCS_PER_CASE: int = 20
     MAX_FILE_SIZE_MB: int = 50
+    # Lifetime of the pre-signed download URL handed to the client.
+    DOCUMENT_URL_EXPIRE_SECONDS: int = 900
+
+    # Retrieval tuning (per-request knobs that used to be module constants)
+    RAG_QDRANT_FETCH_K: int = 15
+    RAG_PRE_FILTER_K: int = 8
+    RAG_RERANK_TOP_K: int = 3
+    RAG_RELEVANCE_THRESHOLD: float = 0.3
+    RAG_CHAT_HISTORY_K: int = 3
+
+    # Reverse proxies whose X-Forwarded-For header may be trusted, as a
+    # comma-separated list of IPs or CIDR blocks. Empty means "trust nobody":
+    # the header is client-controlled, so honouring it from an arbitrary peer
+    # lets anyone bypass the per-IP rate limits.
+    TRUSTED_PROXIES: str = ""
 
     # S3 Configuration
     S3_BUCKET: str = ""

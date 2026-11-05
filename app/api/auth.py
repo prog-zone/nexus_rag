@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_password_hash, verify_password, get_otp_hash, verify_otp_hash, create_access_token, create_refresh_token, create_reset_token
 from app.core.limiter import limiter
+from app.core.timeutils import is_expired
 from app.api.deps import get_current_user
 from app.models.user import User, Profile, UserRefreshToken
 from app.schemas.user import UserCreateSchema, UserSchema, UserBaseSchema, VerifyEmailRequestSchema, ForgotPasswordRequest, ResetPasswordRequest, VerifyResetCodeRequest
@@ -86,7 +87,7 @@ async def verify_email(
         log.warning("verify_email_failed_no_code_set")
         raise invalid_exc
 
-    if datetime.now(timezone.utc) > user.verification_expire:
+    if is_expired(user.verification_expire):
         log.warning("verify_email_failed_expired")
         raise invalid_exc
 
@@ -383,7 +384,7 @@ async def verify_reset_code(
     if not user or not user.resetpass_code or not user.resetpass_expire:
         raise invalid_exc
 
-    if datetime.now(timezone.utc) > user.resetpass_expire:
+    if is_expired(user.resetpass_expire):
         raise invalid_exc
 
     if not verify_otp_hash(body.code, user.resetpass_code):

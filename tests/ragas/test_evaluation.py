@@ -14,11 +14,17 @@ These tests evaluate:
 import json
 import pytest
 from pathlib import Path
-from openai import AsyncOpenAI
 
-from ragas import evaluate
-from ragas.metrics.collections import context_precision, context_recall, faithfulness, answer_relevancy
-from ragas.dataset_schema import SingleTurnSample, EvaluationDataset, EvaluationResult
+pytest.importorskip(
+    "ragas",
+    reason="RAGAS evaluation extras are not installed or not importable",
+)
+
+from openai import AsyncOpenAI  # noqa: E402
+
+from ragas import evaluate  # noqa: E402
+from ragas.metrics.collections import context_precision, context_recall, faithfulness, answer_relevancy  # noqa: E402
+from ragas.dataset_schema import SingleTurnSample, EvaluationDataset, EvaluationResult  # noqa: E402
 
 from app.core.config import settings
 from app.services.retrieval import retrieval_service
